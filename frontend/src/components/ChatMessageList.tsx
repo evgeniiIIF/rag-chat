@@ -52,19 +52,7 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
                   Ответа в документе не найдено.
                 </div>
               )}
-              {m.response && m.response.sources.length > 0 && (
-                <ul className="mt-2 space-y-1 border-t border-slate-200 pt-2 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-400">
-                  {m.response.sources.map((s, i) => (
-                    <li key={`${s.source}-${String(s.paragraph_start)}-${String(i)}`}>
-                      📎 {s.source} · абзац {String(s.paragraph_start)}
-                      {s.paragraph_end !== s.paragraph_start
-                        ? `–${String(s.paragraph_end)}`
-                        : ""}
-                      : «{s.snippet}»
-                    </li>
-                  ))}
-                </ul>
-              )}
+
             </div>
           </div>
         </li>

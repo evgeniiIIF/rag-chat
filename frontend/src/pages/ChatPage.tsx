@@ -1,6 +1,17 @@
 import { useRef, useState, useEffect, useLayoutEffect } from "react";
 import { useChat, type ChatResponse } from "@/features/chat";
-import { UIButton, UIInput } from "@/shared/ui";
+import { UIInput } from "@/shared/ui";
+import { ChatMessageList } from "@/components/ChatMessageList";
+
+// interface Message {
+//   id: string;
+//   role: "user" | "assistant";
+//   text: string;
+//   response?: ChatResponse;
+// }
+
+let seq = 0;
+const nextId = () => `m${++seq}`;
 
 interface Message {
   id: string;
@@ -8,9 +19,6 @@ interface Message {
   text: string;
   response?: ChatResponse;
 }
-
-let seq = 0;
-const nextId = () => `m${++seq}`;
 
 export function ChatPage(): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -74,54 +82,16 @@ export function ChatPage(): JSX.Element {
       {/* Лента сообщений */}
       <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden min-h-0">
         <div className="flex-1 overflow-y-auto px-4 py-6 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
-          {messages.length === 0 && !isPending && (
-            <div className="flex h-full flex-col items-center justify-center text-center animate-fade-in">
-              <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-800 shadow-xl">
-                <span className="text-4xl text-blue-400">💬</span>
-              </div>
-              <h2 className="mb-2 text-2xl font-semibold text-white">Чем я могу помочь?</h2>
-              <p className="text-sm text-slate-400">Задайте вопрос по документу «КЦ».</p>
-
-            </div>
-          )}
-
-          <div className="flex flex-col gap-6">
-            {messages.map((m) => (
-              <div key={m.id} className={`flex gap-4 animate-slide-up ${m.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
-                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg shadow-sm ${
-                  m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-800 text-blue-400 border border-slate-700"
-                }`}>
-                  {m.role === "user" ? "👤" : "🤖"}
-                </div>
-                <div className={`flex max-w-[80%] flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
-                  <div className={`rounded-2xl px-5 py-3 text-sm leading-relaxed shadow-sm ${
-                    m.role === "user" 
-                      ? "bg-blue-600 text-white rounded-tr-sm" 
-                      : "bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-sm"
-                  }`}>
-                    <div className="whitespace-pre-wrap">{m.text}</div>
-                  </div>
-                  
-
-                  {m.response && !m.response.grounded && (
-                    <span className="mt-2 text-xs text-amber-500 bg-amber-500/10 px-2 py-1 rounded">Нет ответа в документе</span>
-                  )}
-                </div>
-              </div>
-            ))}
-            
-            {isPending && (
-              <div className="flex gap-4 animate-fade-in">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-blue-400 border border-slate-700">🤖</div>
-                <div className="flex items-center gap-1.5 rounded-2xl rounded-tl-sm bg-slate-800 border border-slate-700 px-5 py-4">
-                  <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]"></div>
-                  <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]"></div>
-                  <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500"></div>
-                </div>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
+          <ChatMessageList 
+            messages={messages.map(m => ({
+              id: m.id,
+              role: m.role,
+              text: m.text,
+              response: m.response
+            }))}
+            pending={isPending}
+          />
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Поле ввода */}

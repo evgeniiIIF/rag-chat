@@ -25,7 +25,7 @@ def present(
                 source=c.source,
                 paragraph_start=c.span.start,
                 paragraph_end=c.span.end,
-                text=c.text,
+                text=_clean_text(c.text),
             )
             for c in chunks
         ]
@@ -36,3 +36,15 @@ def present(
         grounded=grounded,
         top_score=max(0.0, min(1.0, top)),
     )
+
+
+def _clean_text(text: str) -> str:
+    # Удаляем префиксы типа "📎 КЦ.docx · абзац 1–2: «...»" и оставляем только текст внутри кавычек
+    import re
+    # Паттерн для нахождения текста внутри кавычек «...»
+    # Ищем либо от начала строки с префиксом, либо просто кавычки
+    match = re.search(r'«([^»]+)»', text)
+    if match:
+        return match.group(1).strip()
+    # Если кавычек нет, возвращаем текст как есть (уже чистый)
+    return text.strip()
