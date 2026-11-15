@@ -1,0 +1,31 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# node
+node_modules/
+dist/
+playwright-report/
+test-results/
+
+# локальные данные и индекс
+backend/chroma_db/
+backend/data/*.log
+*.log
+
+# IDE/OS
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,70 @@
+services:
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile.dev
+    container_name: ragchat_nginx
+    expose:
+      - "80"
+    ports:
+      - "${NGINX_HTTP_PORT:-8081}:80"
+    depends_on:
+      backend:
+        condition: service_started
+      frontend:
+        condition: service_started
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: ragchat_backend
+    expose:
+      - "8000"
+    environment:
+      API_KEY: ${BACKEND_API_KEY:-}
+      BASE_URL: ${BACKEND_BASE_URL:-https://polza.ai/api/v1}
+      EMBEDDING_MODEL: ${BACKEND_EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
+      LLM_MODEL: ${BACKEND_LLM_MODEL:-deepseek/deepseek-r1-distill-llama-70b}
+      CHROMA_DIR: ${BACKEND_CHROMA_DIR:-/app/chroma_db}
+      DATA_DIR: ${BACKEND_DATA_DIR:-/app/data}
+      CHUNK_SIZE: ${BACKEND_CHUNK_SIZE:-500}
+      CHUNK_OVERLAP: ${BACKEND_CHUNK_OVERLAP:-100}
+      RETRIEVER_K: ${BACKEND_RETRIEVER_K:-3}
+      SCORE_THRESHOLD: ${BACKEND_SCORE_THRESHOLD:-0.35}
+      TEMPERATURE: ${BACKEND_TEMPERATURE:-0.0}
+      MAX_TOKENS: ${BACKEND_MAX_TOKENS:-500}
+      LOG_LEVEL: ${BACKEND_LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/data:/app/data
+      - ./backend/chroma_db:/app/chroma_db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health/readiness\", timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: ragchat_frontend
+    expose:
+      - "5173"
+    env_file:
+      - .env
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ragchat_net
