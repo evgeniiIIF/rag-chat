@@ -4,18 +4,18 @@ export interface UIButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: ReactNode;
 }
 
-export function UIButton({ children, ...rest }: UIButtonProps): JSX.Element {
+export function UIButton({ children, className = "", ...rest }: UIButtonProps): JSX.Element {
   return (
     <button
       {...rest}
-      style={{
-        padding: "8px 14px",
-        borderRadius: 8,
-        border: "1px solid #333",
-        background: rest.disabled ? "#ddd" : "#1e293b",
-        color: rest.disabled ? "#666" : "white",
-        cursor: rest.disabled ? "not-allowed" : "pointer",
-      }}
+      className={[
+        "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium",
+        "transition-colors focus:outline-none focus:ring-2 focus:ring-accent/40",
+        rest.disabled
+          ? "bg-slate-200 text-slate-500 cursor-not-allowed dark:bg-slate-800 dark:text-slate-500"
+          : "bg-accent text-white hover:bg-accent-hover",
+        className,
+      ].join(" ")}
     >
       {children}
     </button>

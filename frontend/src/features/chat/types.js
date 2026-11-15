@@ -1,0 +1,22 @@
+import { z } from "zod";
+export const chatSourceSchema = z.object({
+    source: z.string(),
+    paragraph_start: z.number().int().nonnegative(),
+    paragraph_end: z.number().int().nonnegative(),
+    snippet: z.string(),
+});
+export const chatResponseSchema = z.object({
+    answer: z.string(),
+    sources: z.array(chatSourceSchema),
+    grounded: z.boolean(),
+    top_score: z.number().min(0).max(1),
+});
+export const chatTurnSchema = z.object({
+    role: z.enum(["user", "assistant"]),
+    content: z.string().min(1).max(2000),
+});
+export const chatRequestSchema = z.object({
+    question: z.string().min(1).max(2000),
+    history: z.array(chatTurnSchema).max(10).optional(),
+    k: z.number().int().min(1).max(10).optional(),
+});
