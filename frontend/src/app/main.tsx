@@ -17,9 +17,7 @@ document.title = env.appName;
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <main style={{ fontFamily: "system-ui, sans-serif", padding: 16 }}>
-        <ChatPage />
-      </main>
+      <ChatPage />
     </QueryClientProvider>
   </StrictMode>,
 );

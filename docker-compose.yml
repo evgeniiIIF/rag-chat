@@ -36,6 +36,7 @@ services:
       TEMPERATURE: ${BACKEND_TEMPERATURE:-0.0}
       MAX_TOKENS: ${BACKEND_MAX_TOKENS:-500}
       LOG_LEVEL: ${BACKEND_LOG_LEVEL:-INFO}
+      WATCHFILES_FORCE_POLLING: "true"
     volumes:
       - ./backend/src:/app/src
       - ./backend/data:/app/data
@@ -60,6 +61,8 @@ services:
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js
+      - ./frontend/postcss.config.cjs:/app/postcss.config.cjs
       - ./frontend/index.html:/app/index.html
       - ./frontend/vite.config.ts:/app/vite.config.ts
       - ./frontend/tsconfig.json:/app/tsconfig.json

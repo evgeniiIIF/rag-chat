@@ -11,7 +11,7 @@ class SourceSchema(BaseModel):
     source: str
     paragraph_start: int = Field(..., ge=1)
     paragraph_end: int = Field(..., ge=1)
-    snippet: str
+    text: str  # полный текст чанка
 
 
 class ChatRequest(BaseModel):

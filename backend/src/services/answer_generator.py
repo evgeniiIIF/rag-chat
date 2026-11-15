@@ -1,9 +1,4 @@
-"""Генерация ответа по контексту. LLM — порт, промпт — константа.
-
-Промпт жёстко требует отвечать ТОЛЬКО по контексту и, если ответа нет,
-вернуть ровно NO_ANSWER. Gate (answer_gate.gate) трактует NO_ANSWER как
-Grounding.NOT_ANSWERABLE и клиент получает «Не знаю».
-"""
+"""Генерация ответа по контексту. LLM — порт, промпт — константа."""
 
 from __future__ import annotations
 
@@ -15,28 +10,24 @@ from ..core.config import Settings
 NO_ANSWER_MARKER: str = "NO_ANSWER"
 
 SYSTEM_INSTRUCTION: str = (
-    "Ты — ассистент, который отвечает на вопросы, используя ТОЛЬКО "
-    "предоставленный контекст. Не добавляй фактов вне контекста. Если "
-    f"контекста недостаточно, ответь ровно одним словом: {NO_ANSWER_MARKER}. "
-    "Отвечай кратко и по существу."
+    "Ты — вежливый ассистент по банкротству. Используй ТОЛЬКО факты из предоставленного контекста.\n"
+    "Правила:\n"
+    "1. Отвечай красиво, понятно и по делу. Если в контексте есть факты, но они разбросаны — собери их в логичный ответ.\n"
+    "2. Если вопрос по теме банкротства и в контексте есть хоть какая-то информация — ответь, даже если нет дословного определения. Обобщи по смыслу.\n"
+    "3. Если ответ отрицательный (например, «не работаем в X»), добавь позитивную альтернативу из контекста (например, «зато работаем в 63 регионах»).\n"
+    "4. Если вопрос СОВЕРШЕННО не по теме (политика, погода, другие науки) и в контексте нет ни слова об этом — верни ровно одно слово: NO_ANSWER.\n"
+    "5. Не выдумывай факты, которых нет в контексте.\n"
 )
-
 
 @runtime_checkable
 class LLMPort(Protocol):
-    """Порт LLM: один вызов, возвращает текст ответа."""
-
     def complete(self, system: str, user: str) -> str: ...
-
 
 def build_user_prompt(question: str, context: Sequence[str]) -> str:
     joined = "\n\n".join(part.strip() for part in context if part.strip())
     return f"Контекст:\n{joined}\n\nВопрос: {question.strip()}\n\nОтвет:"
 
-
 class AnswerGenerator:
-    """Собирает промпт и дергает LLM. Промпт-константа, temperature=0."""
-
     def __init__(self, llm: LLMPort, settings: Settings) -> None:
         self._llm = llm
         self._settings = settings
@@ -50,9 +41,7 @@ class AnswerGenerator:
         raw = self._llm.complete(SYSTEM_INSTRUCTION, user)
         return normalize(raw)
 
-
 def normalize(raw: str) -> str:
-    """Трим и защита: пусто -> NO_ANSWER; маркер оставляем как есть."""
     text = raw.strip()
     if not text:
         return NO_ANSWER_MARKER

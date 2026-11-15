@@ -4,36 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from ..models.chunk import Chunk
 from ..models.grounding import Grounding
 from ..models.retrieved import RetrievedChunk
 from ..schemas.chat import ChatResponse, SourceSchema
-
-SNIPPET_LIMIT: int = 200
-
-
-def _snippet(text: str) -> str:
-    clean = text.strip().replace("\n", " ")
-    if len(clean) <= SNIPPET_LIMIT:
-        return clean
-    return clean[: SNIPPET_LIMIT - 1] + "…"
 
 
 def present(
     answer: str,
     grounding: Grounding,
     hits: Sequence[RetrievedChunk],
+    expanded: Sequence[Chunk] | None = None,
 ) -> ChatResponse:
     grounded = grounding is Grounding.GROUNDED
+    chunks = expanded if expanded is not None else [h.chunk for h in hits]
     sources: list[SourceSchema] = []
     if grounded:
         sources = [
             SourceSchema(
-                source=hit.chunk.source,
-                paragraph_start=hit.chunk.span.start,
-                paragraph_end=hit.chunk.span.end,
-                snippet=_snippet(hit.chunk.text),
+                source=c.source,
+                paragraph_start=c.span.start,
+                paragraph_end=c.span.end,
+                text=c.text,
             )
-            for hit in hits
+            for c in chunks
         ]
     top = max((hit.score for hit in hits), default=0.0)
     return ChatResponse(
