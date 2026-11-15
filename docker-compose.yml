@@ -26,21 +26,21 @@ services:
       API_KEY: ${BACKEND_API_KEY:-}
       BASE_URL: ${BACKEND_BASE_URL:-https://polza.ai/api/v1}
       EMBEDDING_MODEL: ${BACKEND_EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
-      LLM_MODEL: ${BACKEND_LLM_MODEL:-deepseek/deepseek-r1-distill-llama-70b}
+      LLM_MODEL: ${BACKEND_LLM_MODEL:-deepseek/deepseek-v3.2}
       CHROMA_DIR: ${BACKEND_CHROMA_DIR:-/app/chroma_db}
       DATA_DIR: ${BACKEND_DATA_DIR:-/app/data}
       CHUNK_SIZE: ${BACKEND_CHUNK_SIZE:-500}
       CHUNK_OVERLAP: ${BACKEND_CHUNK_OVERLAP:-100}
       RETRIEVER_K: ${BACKEND_RETRIEVER_K:-3}
-      SCORE_THRESHOLD: ${BACKEND_SCORE_THRESHOLD:-0.35}
+      SCORE_THRESHOLD: ${BACKEND_SCORE_THRESHOLD:-0.02}
       TEMPERATURE: ${BACKEND_TEMPERATURE:-0.0}
       MAX_TOKENS: ${BACKEND_MAX_TOKENS:-500}
       LOG_LEVEL: ${BACKEND_LOG_LEVEL:-INFO}
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
-      - ./backend/src:/app/src
-      - ./backend/data:/app/data
-      - ./backend/chroma_db:/app/chroma_db
+      - ./backend:/app
+      - /app/.venv
+      - /app/chroma_db
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health/readiness\", timeout=5)"]
       interval: 10s
@@ -59,13 +59,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-      - ./frontend/tailwind.config.js:/app/tailwind.config.js
-      - ./frontend/postcss.config.cjs:/app/postcss.config.cjs
-      - ./frontend/index.html:/app/index.html
-      - ./frontend/vite.config.ts:/app/vite.config.ts
-      - ./frontend/tsconfig.json:/app/tsconfig.json
+      - ./frontend:/app
+      - /app/node_modules
     restart: unless-stopped
 
 networks:
