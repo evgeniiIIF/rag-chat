@@ -60,9 +60,23 @@ def _build_service() -> ChatService:
     store_repo = VectorStoreRepository(settings, embeddings=embeddings)
     chunks, has_data = _index_data()
     if has_data:
-        # Инвалидация: пересобираем, если данные непустые (документ один).
-        store = store_repo.rebuild(chunks, source_hash="auto")
-        log.info("Индекс пересобран: %d чанков", len(chunks))
+        # Инвалидация по хэшу: если документ не менялся — загружаем, иначе пересобираем
+        from pathlib import Path as _Path
+        data_dir = _Path(settings.data_dir)
+        docx_files = sorted(data_dir.glob("*.docx"))
+        if docx_files:
+            source_file = docx_files[0]
+            from .repositories.vector_store import content_hash
+            h = content_hash(source_file)
+            if store_repo.is_indexed(source_file):
+                log.info("Индекс актуален (хэш совпал), загружаем без пересборки")
+                store = store_repo.load()
+            else:
+                store = store_repo.rebuild(chunks, source_hash=h)
+                log.info("Индекс пересобран: %d чанков (хэш изменился)", len(chunks))
+        else:
+            store = store_repo.rebuild(chunks, source_hash="auto")
+            log.info("Индекс пересобран: %d чанков", len(chunks))
     else:
         store = store_repo.load()
         log.warning("Нет data/*.docx — грузим существующий индекс")

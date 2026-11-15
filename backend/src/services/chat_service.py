@@ -13,6 +13,7 @@ from ..schemas.chat import ChatRequest, ChatResponse
 from .answer_gate import NOT_ANSWERABLE_TEXT, gate
 from .answer_generator import NO_ANSWER_MARKER, AnswerGenerator
 from .chat_presenter import present
+from .guardrail import InputGuardrail
 from .query_condenser import QueryCondenser
 
 CONTEXT_NEIGHBORS: int = 2
@@ -36,6 +37,7 @@ class ChatService:
         self._condenser = condenser
         self._settings = settings
         self._corpus: list[Chunk] = list(corpus or [])
+        self._guardrail = InputGuardrail()
 
     def ask(self, request: ChatRequest) -> ChatResponse:
         q = request.question.strip()

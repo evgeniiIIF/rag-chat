@@ -4,7 +4,7 @@ export const chatSourceSchema = z.object({
   source: z.string(),
   paragraph_start: z.number().int().nonnegative(),
   paragraph_end: z.number().int().nonnegative(),
-  snippet: z.string(),
+  text: z.string(),
 });
 
 export const chatResponseSchema = z.object({
