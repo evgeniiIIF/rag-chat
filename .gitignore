@@ -29,3 +29,7 @@ backend/data/*.log
 .DS_Store
 .vscode/
 .idea/
+
+# tsc-generated js (не должно быть)
+frontend/src/**/*.js
+frontend/tests/**/*.js
