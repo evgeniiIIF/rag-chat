@@ -14,6 +14,21 @@ if (root === null) {
 
 document.title = env.appName;
 
+// iOS/Android: подстраиваем высоту shell под visual viewport (клавиатура).
+function applyAppHeight(): void {
+  const vv = window.visualViewport;
+  const h = vv !== null ? vv.height : window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${String(h)}px`);
+}
+applyAppHeight();
+
+if (window.visualViewport !== null) {
+  window.visualViewport.addEventListener("resize", applyAppHeight);
+  window.visualViewport.addEventListener("scroll", applyAppHeight);
+}
+window.addEventListener("resize", applyAppHeight);
+window.addEventListener("orientationchange", applyAppHeight);
+
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
