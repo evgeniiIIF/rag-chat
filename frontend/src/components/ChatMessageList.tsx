@@ -15,7 +15,7 @@ export interface ChatMessageListProps {
 export function ChatMessageList({ messages, pending }: ChatMessageListProps): JSX.Element {
   if (messages.length === 0 && !pending) {
     return (
-      <div className="flex h-full min-h-[40vh] flex-col items-center justify-center text-center text-slate-500 dark:text-slate-400">
+      <div className="flex h-full flex-col items-center justify-center text-center text-slate-500 dark:text-slate-400">
         <div className="mb-2 text-4xl">💬</div>
         <p className="text-sm">Задайте вопрос.</p>
       </div>
