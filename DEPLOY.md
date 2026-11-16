@@ -1,124 +1,103 @@
 # Деплой на VPS
 
-Прод-запуск: `docker-compose.prod.yml` + `nginx/conf.d/prod.conf`.
-Стек: nginx (80) → frontend (статика на :80) и /api → backend (:8000).
-Индекс ChromaDB персистентный (volume `chroma_db`), документы монтируются `./backend/data:ro`.
+Прод: docker-compose.prod.yml. nginx (80) -> frontend (статика) + /api -> backend (:8000).
+ChromaDB в volume chroma_db; документы ./backend/data:ro.
+Node на VPS НЕ нужен — фронт собирается в frontend/Dockerfile (multi-stage).
 
-## 0. Требования к VPS
+## 1. Быстрый старт (локально)
 
-- Ubuntu 22.04+ (или Debian 12+), 1 vCPU / 2 GB RAM минимум (LangChain+Chroma тянут ~1 GB).
-- Открытые порты: 22 (SSH), 80 (HTTP), 443 (HTTPS).
-- Домен (A-запись на IP сервера) — для HTTPS.
+    cp .env.example .env
+    chmod 600 .env
+    ./deploy.sh
 
-## 1. Установка Docker
+Флаги:
 
-\`\`\`bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker "$USER"
-# перелогиниться (выйти и зайти по SSH), чтобы применилась группа
-docker --version
-docker compose version
-\`\`\`
+| Флаг | Что делает |
+|------|------------|
+| --first    | на VPS создать .env из .env.example, если его нет (первый деплой) |
+| --no-push  | не пушить локально (код на remote уже обновлён) |
+| --branch b | ветка (default main) |
 
-## 2. Код и .env
+Переменные: SSH_KEY SSH_USER SSH_HOST REMOTE_DIR BRANCH COMPOSE_FILE.
 
-\`\`\`bash
-git clone <repo-url> rag_chat
-cd rag_chat
-cp .env.example .env
-nano .env    # вписать BACKEND_API_KEY (ключ провайдера), при необходимости LLM/embedding модель
-chmod 600 .env
-\`\`\`
+## 2. Первый деплой нового VPS
 
-Ключи, которые **обязательно** заполнить в \`.env\`:
-- \`BACKEND_API_KEY\` — ключ polza.ai (или другого OpenAI-совместимого провайдера).
-- \`BACKEND_LLM_MODEL\` — существующая у провайдера модель (по умолчанию \`deepseek/deepseek-v3.2\`).
-- \`NGINX_HTTP_PORT=80\` — для прода.
+1. На VPS: Docker + compose (curl -fsSL https://get.docker.com | sh), usermod -aG docker $USER, перелогин.
+2. Клонировать репо на VPS:
 
-## 3. Первый запуск
+       git clone <repo-url> ~/rag-chat
 
-\`\`\`bash
-docker compose -f docker-compose.prod.yml up -d --build
-# первый старт backend ~1.5 мин (индексация), следить:
-docker compose -f docker-compose.prod.yml logs -f backend
-\`\`\`
+3. Локально:
 
-Готовность:
-\`\`\`bash
-curl -sS http://<IP-сервера>/api/health
-curl -sS -X POST http://<IP-сервера>/api/chat \\
-  -H "Content-Type: application/json" \\
-  -d \x27{"question":"Что при банкротстве?"}\x27 | python3 -m json.tool --no-ensure-ascii
-\`\`\`
+       ./deploy.sh --first
 
-UI: http://<IP-сервера>/ (порт 80).
+4. На VPS заполнить ~/rag-chat/.env (BACKEND_API_KEY, BACKEND_LLM_MODEL, NGINX_HTTP_PORT=80), chmod 600 .env.
+5. ./deploy.sh --no-push — пересборка с реальными ключами и health-check.
 
-## 4. Firewall (ufw)
+Firewall:
 
-\`\`\`bash
-sudo ufw allow 22/tcp
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw enable
-\`\`\`
+    sudo ufw allow 22/tcp && sudo ufw allow 80/tcp && sudo ufw allow 443/tcp && sudo ufw enable
 
-## 5. HTTPS (Let\x27s Encrypt) — после того как HTTP работает
+## 3. Обновление прода
 
-Вариант А: certbot вручную.
+    ./deploy.sh
 
-\`\`\`bash
-sudo apt install -y certbot
-# вебрут: сертификат без остановки nginx
-sudo certbot certonly --webroot -w /var/lib/docker/volumes/rag_chat_certbot_www/_data -d <домен> --email <email> --agree-tos -n
-\`\`\`
+Шаги:
 
-После получения сертификата — добавить в \`nginx/conf.d/prod.conf\` server-блок на 443 (файлы \`/etc/letsencrypt/live/<домен>/fullchain.pem\` и \`privkey.pem\`), смонтировать в nginx-volume:
+1. git push origin main — локально.
+2. ssh $SSH_USER@$SSH_HOST — переход на VPS.
+3. docker compose -f docker-compose.prod.yml down --remove-orphans — стоп и удаление контейнеров.
+4. git fetch --all --prune + git reset --hard origin/main + git clean -fdx -e .env — все локальные изменения на VPS сносятся, код = origin; .env сохраняется.
+5. [ -f .env ] || cp .env.example .env — гарантия наличия env (при --first).
+6. docker compose -f docker-compose.prod.yml build --pull — свежие образы.
+7. docker compose -f docker-compose.prod.yml up -d --remove-orphans — запуск.
+8. curl -fsS http://localhost/api/health (10 попыток x 3s) + compose ps.
 
-\`\`\`yaml
-# docker-compose.prod.yml → nginx.volumes
-- /etc/letsencrypt:/etc/letsencrypt:ro
-- certbot_www:/var/www/certbot:ro
-\`\`\`
+prune не используется: обновление достигается down --remove-orphans + build --pull + up -d --remove-orphans; volume chroma_db сохраняется.
 
-И порт:
-\`\`\`yaml
-ports:
-  - "80:80"
-  - "443:443"
-\`\`\`
+## 4. Ручные шаги (то же, без скрипта)
 
-Потом:
-\`\`\`bash
-docker compose -f docker-compose.prod.yml up -d nginx
-\`\`\`
+    # локально
+    git push origin main
 
-Автообновление сертификата:
-\`\`\`bash
-sudo systemctl enable certbot.timer
-sudo systemctl start certbot.timer
-\`\`\`
+    # на VPS
+    ssh -i ~/.ssh/cloud_ru user1@176.109.103.195
+    cd ~/rag-chat
+    docker compose -f docker-compose.prod.yml down --remove-orphans
+    git fetch --all --prune
+    git reset --hard origin/main
+    git clean -fdx -e .env
+    [ -f .env ] || cp .env.example .env
+    docker compose -f docker-compose.prod.yml build --pull
+    docker compose -f docker-compose.prod.yml up -d --remove-orphans
+    curl -fsS http://localhost/api/health && docker compose -f docker-compose.prod.yml ps
 
-## 6. Обновление кода
+## 5. Проверка
 
-\`\`\`bash
-git pull
-docker compose -f docker-compose.prod.yml build
-docker compose -f docker-compose.prod.yml up -d
-\`\`\`
+    curl -sS http://<IP>/api/health
+    curl -sS -X POST http://<IP>/api/chat \
+      -H "Content-Type: application/json" \
+      -d {"question":"Что при банкротстве?"} | python3 -m json.tool --no-ensure-ascii
 
-Индекс сохраняется в volume \`chroma_db\`; переиндексация при изменении \`backend/data/*.docx\` — автоматически при старте (хэш-сравнение).
+UI: http://<IP>/.
 
-## 7. Логи и отладка
+## 6. Диагностика
 
-\`\`\`bash
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f --tail=100 backend
-docker compose -f docker-compose.prod.yml logs -f --tail=50 nginx
-\`\`\`
+    ssh -i ~/.ssh/cloud_ru user1@176.109.103.195 "cd ~/rag-chat && docker compose -f docker-compose.prod.yml ps"
+    ssh -i ~/.ssh/cloud_ru user1@176.109.103.195 "cd ~/rag-chat && docker compose -f docker-compose.prod.yml logs -f --tail=100 backend"
+    ssh -i ~/.ssh/cloud_ru user1@176.109.103.195 "df -h && free -m"
 
-## 8. Безопасность (минимум)
+## 7. HTTPS (Let us Encrypt)
 
-- \`.env\` в \`.gitignore\` и \`chmod 600\` — не коммитить ключи.
-- Не публиковать backend наружу (\`expose\` вместо \`ports\` — уже так).
-- SSH: только по ключу (\`PasswordAuthentication no\` в \`/etc/ssh/sshd_config\`).
-- Регулярно: \`docker compose ... pull && build && up -d\`.
+    sudo apt install -y certbot
+    sudo certbot certonly --webroot -w /var/lib/docker/volumes/rag_chat_certbot_www/_data -d <домен> --email <email> --agree-tos -n
+    sudo systemctl enable --now certbot.timer
+
+Добавить в nginx/conf.d/prod.conf server-блок на 443, в docker-compose.prod.yml ports: 80:80, 443:443 + bind /etc/letsencrypt. Затем ./deploy.sh --no-push.
+
+## 8. Безопасность
+
+- .env в .gitignore, chmod 600, не логируется.
+- backend наружу не публикуется (expose, не ports).
+- SSH только по ключу (PasswordAuthentication no).
+- .env.prod с реальным ключом не держать в репозитории — только на VPS.

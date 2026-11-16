@@ -30,7 +30,7 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
         >
           <div
             className={[
-              "flex max-w-[85%] items-start gap-3 rounded-2xl px-4 py-3 text-sm shadow-sm",
+              "flex max-w-[92%] items-start gap-2 rounded-2xl px-3 py-2 text-sm shadow-sm sm:max-w-[85%] sm:gap-3 sm:px-4 sm:py-3",
               m.role === "user"
                 ? "bg-accent text-white"
                 : "bg-white text-slate-800 dark:bg-slate-900 dark:text-slate-100",
@@ -51,7 +51,6 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
                   Ответа в документе не найдено.
                 </div>
               )}
-
             </div>
           </div>
         </li>

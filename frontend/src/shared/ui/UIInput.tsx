@@ -3,23 +3,16 @@ import { forwardRef, type InputHTMLAttributes } from "react";
 export type UIInputProps = InputHTMLAttributes<HTMLInputElement>;
 
 export const UIInput = forwardRef<HTMLInputElement, UIInputProps>(
-  function UIInput({ className = "", style, ...props }, ref) {
+  function UIInput({ className = "", ...props }, ref) {
     return (
       <input
         {...props}
         ref={ref}
-        style={{
-          backgroundColor: "#1e293b",
-          color: "#f1f5f9",
-          border: "1px solid #334155",
-          borderRadius: "12px",
-          padding: "16px",
-          width: "100%",
-          fontSize: "14px",
-          outline: "none",
-          ...style,
-        }}
-        className={className}
+        className={[
+          "min-h-[44px] w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-100",
+          "placeholder:text-slate-500 outline-none focus:border-accent focus:ring-2 focus:ring-accent/30",
+          className,
+        ].join(" ")}
       />
     );
   },
