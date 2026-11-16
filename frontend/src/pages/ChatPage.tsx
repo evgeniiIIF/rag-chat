@@ -67,7 +67,7 @@ export function ChatPage(): JSX.Element {
           </div>
           <div>
             <h1 className="text-lg font-semibold tracking-tight text-white">RAG Assistant</h1>
-            <p className="text-xs text-slate-400">Умные ответы по вашему документу</p>
+            <p className="text-xs text-slate-400">Ответы по вашему документу</p>
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500">

@@ -48,7 +48,7 @@ docker compose -f docker-compose.prod.yml logs -f backend
 curl -sS http://<IP-сервера>/api/health
 curl -sS -X POST http://<IP-сервера>/api/chat \\
   -H "Content-Type: application/json" \\
-  -d \x27{"question":"Что с детьми при банкротстве?"}\x27 | python3 -m json.tool --no-ensure-ascii
+  -d \x27{"question":"Что при банкротстве?"}\x27 | python3 -m json.tool --no-ensure-ascii
 \`\`\`
 
 UI: http://<IP-сервера>/ (порт 80).

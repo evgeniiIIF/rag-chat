@@ -17,8 +17,7 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
     return (
       <div className="flex h-full min-h-[40vh] flex-col items-center justify-center text-center text-slate-500 dark:text-slate-400">
         <div className="mb-2 text-4xl">💬</div>
-        <p className="text-sm">Задайте вопрос по документу «КЦ».</p>
-        <p className="text-xs">Например: «Что с детьми при банкротстве?»</p>
+        <p className="text-sm">Задайте вопрос.</p>
       </div>
     );
   }

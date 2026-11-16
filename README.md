@@ -98,3 +98,19 @@ docs/chains/chat.md
 - Embedding-модель: \`BACKEND_EMBEDDING_MODEL\` (по умолчанию \`qwen/qwen3-embedding-8b\`).
 - \`SCORE_THRESHOLD\` — порог «Не знаю». Ниже — gate отсекает ответ. Дефолт 0.02.
 - \`docs/chains/chat.md\` — обязательный артефакт: код = 1 шаг цепочки.
+
+
+## Деплой
+
+Для деплоя на production сервер используйте скрипт `./deploy.sh`:
+
+```bash
+chmod +x deploy.sh  # если еще не исполняемый
+./deploy.sh
+```
+
+Скрипт предложит выбрать метод деплоя:
+1. **Git** - если настроен удалённый репозиторий
+2. **Rsync** - копирование файлов напрямую (по умолчанию)
+
+Подробные инструкции: [DEPLOY_INSTRUCTIONS.md](DEPLOY_INSTRUCTIONS.md)
