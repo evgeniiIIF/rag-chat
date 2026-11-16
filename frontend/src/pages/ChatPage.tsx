@@ -48,36 +48,37 @@ export function ChatPage(): JSX.Element {
   }
 
   return (
-    <div className="grid h-full w-full grid-rows-[auto_1fr_auto] bg-slate-900 text-slate-100 font-sans">
-      <header className="safe-top flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/50 px-3 py-3 backdrop-blur-md sm:px-6 sm:py-4">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/20 sm:h-10 sm:w-10">
-            <span className="text-lg sm:text-xl">✨</span>
+    <div className="app-shell">
+      <header className="app-header flex h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 backdrop-blur-md sm:h-auto sm:px-6 sm:py-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 shadow-md shadow-blue-500/20">
+            <span className="text-lg leading-none">✨</span>
           </div>
           <div className="min-w-0">
             <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-lg">RAG Assistant</h1>
             <p className="hidden text-xs text-slate-400 sm:block">Ответы по вашему документу</p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-xs text-slate-500">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
             <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
           </span>
-          <span className="hidden sm:inline">Онлайн</span>
         </div>
       </header>
 
-      <main className="flex min-h-0 w-full flex-col overflow-hidden">
-        <div ref={scrollRef} className="scrollbar-chat mx-auto w-full max-w-4xl flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
-          <ChatMessageList
-            messages={messages.map((m) => ({ id: m.id, role: m.role, text: m.text, response: m.response }))}
-            pending={isPending}
-          />
+      <main className="app-main w-full">
+        <div ref={scrollRef} className="app-main__scroll scrollbar-chat w-full px-4 py-5 sm:px-4 sm:py-6">
+          <div className="mx-auto w-full max-w-4xl">
+            <ChatMessageList
+              messages={messages.map((m) => ({ id: m.id, role: m.role, text: m.text, response: m.response }))}
+              pending={isPending}
+            />
+          </div>
         </div>
       </main>
 
-      <footer className="safe-bottom border-t border-slate-800 bg-slate-900 px-3 py-3 sm:px-4 sm:py-4">
+      <footer className="app-footer border-t border-slate-800 bg-slate-900 px-4 py-3 sm:px-4 sm:py-4">
         <div className="relative mx-auto max-w-3xl">
           <UIInput
             ref={inputRef}
@@ -90,24 +91,23 @@ export function ChatPage(): JSX.Element {
               }
             }}
             placeholder="Задайте вопрос..."
-            className="pr-14 sm:pr-16"
+            className="pr-16 sm:pr-16"
           />
           <div
             role="button"
             tabIndex={-1}
             onClick={() => { if (draft.trim() && !isPending) void send(); }}
             className={
-              "absolute right-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 " +
+              "absolute right-2 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 sm:h-10 sm:w-10 " +
               ((!draft.trim() || isPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer")
             }
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6 sm:h-5 sm:w-5">
               <path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" />
             </svg>
           </div>
         </div>
-        {error && <p className="mt-2 text-center text-xs text-rose-500">{error.message}</p>}
-        <p className="mt-2 text-center text-xs text-slate-500 sm:mt-3">RAG Chat может ошибаться. Проверяйте важную информацию.</p>
+        {error && <p className="mt-2 text-center text-sm text-rose-500 sm:text-xs">{error.message}</p>}
       </footer>
     </div>
   );
