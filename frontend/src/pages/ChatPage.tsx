@@ -4,7 +4,7 @@ import { UIInput } from "@/shared/ui";
 import { ChatMessageList } from "@/components/ChatMessageList";
 
 let seq = 0;
-const nextId = () => `m${++seq}`;
+const nextId = (): string => `m${String(++seq)}`;
 
 interface Message {
   id: string;
@@ -17,18 +17,18 @@ export function ChatPage(): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const { mutateAsync, isPending, error } = useChat();
 
-  // Автоскролл вниз при новом сообщении
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollRef.current;
+    if (el !== null) el.scrollTop = el.scrollHeight;
   }, [messages, isPending]);
 
-  // Возврат фокуса в инпут (синхронно, после каждого рендера)
   useLayoutEffect(() => {
-    if (document.activeElement !== inputRef.current) {
-      inputRef.current?.focus();
+    const el = inputRef.current;
+    if (el !== null && document.activeElement !== el) {
+      el.focus({ preventScroll: true });
     }
   });
 
@@ -36,11 +36,10 @@ export function ChatPage(): JSX.Element {
     const q = draft.trim();
     if (!q || isPending) return;
     setDraft("");
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
     setMessages((prev) => [...prev, { id: nextId(), role: "user", text: q }]);
     try {
       const history = messages.slice(-10).map((m) => ({ role: m.role, content: m.text }));
-      console.log("DEBUG history:", history);
       const response = await mutateAsync({ question: q, history });
       setMessages((prev) => [...prev, { id: nextId(), role: "assistant", text: response.answer, response }]);
     } catch {
@@ -49,9 +48,8 @@ export function ChatPage(): JSX.Element {
   }
 
   return (
-    <div className="grid h-[100dvh] w-full grid-rows-[auto_1fr_auto] bg-slate-900 text-slate-100 font-sans">
-      {/* Шапка — всегда сверху */}
-      <header className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/50 px-3 py-3 backdrop-blur-md sm:px-6 sm:py-4">
+    <div className="grid h-full w-full grid-rows-[auto_1fr_auto] bg-slate-900 text-slate-100 font-sans">
+      <header className="safe-top flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/50 px-3 py-3 backdrop-blur-md sm:px-6 sm:py-4">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/20 sm:h-10 sm:w-10">
             <span className="text-lg sm:text-xl">✨</span>
@@ -70,29 +68,21 @@ export function ChatPage(): JSX.Element {
         </div>
       </header>
 
-      {/* Лента сообщений — между хедером и инпутом, скролл внутри */}
       <main className="flex min-h-0 w-full flex-col overflow-hidden">
-        <div className="scrollbar-chat mx-auto w-full max-w-4xl flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
+        <div ref={scrollRef} className="scrollbar-chat mx-auto w-full max-w-4xl flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
           <ChatMessageList
-            messages={messages.map((m) => ({
-              id: m.id,
-              role: m.role,
-              text: m.text,
-              response: m.response,
-            }))}
+            messages={messages.map((m) => ({ id: m.id, role: m.role, text: m.text, response: m.response }))}
             pending={isPending}
           />
-          <div ref={messagesEndRef} />
         </div>
       </main>
 
-      {/* Поле ввода — всегда снизу */}
-      <footer className="border-t border-slate-800 bg-slate-900 px-3 py-3 sm:px-4 sm:py-4">
+      <footer className="safe-bottom border-t border-slate-800 bg-slate-900 px-3 py-3 sm:px-4 sm:py-4">
         <div className="relative mx-auto max-w-3xl">
           <UIInput
             ref={inputRef}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => { setDraft(e.target.value); }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();

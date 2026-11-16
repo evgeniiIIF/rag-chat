@@ -10,15 +10,17 @@ export default tseslint.config(
       "playwright-report",
       "test-results",
       "eslint.config.js",
+      "postcss.config.cjs",
       "vite.config.ts",
       "playwright.config.ts",
       "*.config.ts",
       "*.config.js",
+      "*.config.cjs",
     ],
   },
-  ...tseslint.configs.strictTypeChecked,
   {
     files: ["src/**/*.{ts,tsx}", "tests/**/*.{ts,tsx}"],
+    extends: [...tseslint.configs.strictTypeChecked],
     languageOptions: {
       parserOptions: {
         projectService: true,

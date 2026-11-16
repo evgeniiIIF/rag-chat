@@ -6,7 +6,7 @@ describe("chat zod schemas", () => {
     const parsed = chatResponseSchema.parse({
       answer: "С 2017 года.",
       sources: [
-        { source: "КЦ.docx", paragraph_start: 3, paragraph_end: 3, snippet: "…" },
+        { source: "КЦ.docx", paragraph_start: 3, paragraph_end: 3, text: "…" },
       ],
       grounded: true,
       top_score: 0.9,
