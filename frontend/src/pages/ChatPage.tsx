@@ -69,7 +69,7 @@ export function ChatPage(): JSX.Element {
 
       <main className="app-main w-full">
         <div ref={scrollRef} className="app-main__scroll scrollbar-chat w-full px-4 py-5 sm:px-4 sm:py-6">
-          <div className="mx-auto w-full max-w-4xl">
+          <div className="mx-auto flex h-full w-full max-w-4xl flex-col">
             <ChatMessageList
               messages={messages.map((m) => ({ id: m.id, role: m.role, text: m.text, response: m.response }))}
               pending={isPending}
