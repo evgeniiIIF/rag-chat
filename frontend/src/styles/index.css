@@ -44,7 +44,6 @@ html, body, #root {
 
 .app-footer {
   flex: 0 0 auto;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* ---------- кастомный скролл истории ---------- */
