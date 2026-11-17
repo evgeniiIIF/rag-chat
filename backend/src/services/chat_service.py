@@ -11,8 +11,9 @@ from ..models.retrieved import RetrievedChunk
 from ..models.turn import Turn
 from ..schemas.chat import ChatRequest, ChatResponse
 from .answer_gate import NOT_ANSWERABLE_TEXT, gate
-from .answer_generator import AnswerGenerator
+from .answer_generator import HISTORY_WINDOW, AnswerGenerator
 from .chat_presenter import present
+from .conversation_memory import ConversationMemory
 from .guardrail import InputGuardrail
 from .query_condenser import QueryCondenser
 
@@ -45,6 +46,7 @@ class ChatService:
         condenser: QueryCondenser,
         settings: Settings,
         corpus: Sequence[Chunk] | None = None,
+        memory: ConversationMemory | None = None,
     ) -> None:
         self._retriever = retriever
         self._generator = generator
@@ -52,6 +54,7 @@ class ChatService:
         self._settings = settings
         self._corpus: list[Chunk] = list(corpus or [])
         self._guardrail = InputGuardrail()
+        self._memory = memory
 
     def ask(self, request: ChatRequest) -> ChatResponse:
         q = request.question.strip()
@@ -68,7 +71,8 @@ class ChatService:
         if self._is_small_talk(q):
             return present(self._small_talk_answer(q, history), Grounding.GROUNDED, [], [])
 
-        standalone = self._condenser.standalone(q, history)
+        summary, recent_history = self._recent(history)
+        standalone = self._condenser.standalone(q, recent_history)
         k = request.k or self._settings.retriever_k
         hits: list[RetrievedChunk] = self._retriever.search(standalone, k)  # type: ignore[attr-defined]
         expanded = self._expand(hits)
@@ -78,11 +82,19 @@ class ChatService:
             answer = None
         else:
             context = [c.text for c in expanded]
-            answer = self._generator.generate(q, context, history)
+            answer = self._generator.generate(q, context, recent_history, summary=summary)
 
         grounding = gate(hits, answer, self._settings)
         final = answer if grounding is Grounding.GROUNDED and answer else NOT_ANSWERABLE_TEXT
         return present(final, grounding, hits, expanded)
+
+    def _recent(self, history: list[Turn]) -> tuple[str | None, list[Turn]]:
+        """Окно истории (+ резюме старых реплик): диалог не должен перекрывать документ."""
+        if not history:
+            return None, []
+        if self._memory is not None:
+            return self._memory.get_processed_history(history)
+        return None, list(history[-HISTORY_WINDOW:])
 
     def _is_small_talk(self, q: str) -> bool:
         low = q.lower().strip()

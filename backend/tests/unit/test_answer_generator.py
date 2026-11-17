@@ -105,3 +105,50 @@ def test_generate_accepts_history_without_breaking_contract() -> None:
     assert out == "ok"
     assert "История диалога:" in captured["user"]
     assert "Долг 1 млн" in captured["user"]
+
+
+# ---------- OPS 07: контекст важнее истории ----------
+
+from src.services.answer_generator import HISTORY_TURN_CHARS, HISTORY_WINDOW
+
+
+def _turns(n: int, chars: int = 10) -> list:
+    from src.models.turn import Turn
+
+    return [Turn(role=("user" if i % 2 == 0 else "assistant"), content="x" * chars) for i in range(n)]
+
+
+def test_context_block_comes_before_history() -> None:
+    prompt = build_user_prompt("Сколько стоит?", ["Цена — 5000 руб."], _turns(4))
+    assert prompt.index("Контекст:") < prompt.index("История диалога:")
+    assert prompt.index("Контекст:") < prompt.index("Вопрос:")
+
+
+def test_history_is_windowed() -> None:
+    from src.models.turn import Turn
+
+    hist = [Turn(role="user", content=f"реплика {i}") for i in range(12)]
+    prompt = build_user_prompt("q?", ["ctx"], hist)
+    assert "реплика 11" in prompt
+    assert "реплика 0" not in prompt
+    assert prompt.count("Пользователь: реплика") == HISTORY_WINDOW or prompt.count("реплика") <= HISTORY_WINDOW
+
+
+def test_long_turn_is_truncated() -> None:
+    from src.models.turn import Turn
+
+    hist = [Turn(role="assistant", content="д" * (HISTORY_TURN_CHARS + 500))]
+    prompt = build_user_prompt("q?", ["ctx"], hist)
+    assert "…" in prompt
+    assert "д" * (HISTORY_TURN_CHARS + 1) not in prompt
+
+
+def test_summary_renders_between_context_and_question() -> None:
+    prompt = build_user_prompt("q?", ["ctx"], _turns(2), summary="Говорили о долге 1 млн в Казани.")
+    assert "Резюме диалога:" in prompt
+    assert prompt.index("Контекст:") < prompt.index("Резюме диалога:") < prompt.index("Вопрос:")
+
+
+def test_system_prompt_declares_context_as_only_fact_source() -> None:
+    assert "ИСКЛЮЧИТЕЛЬНО из блока «Контекст»" in SYSTEM_INSTRUCTION
+    assert "прав Контекст" in SYSTEM_INSTRUCTION

@@ -17,7 +17,8 @@ from .repositories.docx_loader import DocxParagraphLoader, merge_adjacent
 from .repositories.embeddings import OpenAIEmbeddingsAdapter
 from .repositories.hybrid_retriever import HybridRetriever
 from .repositories.vector_store import VectorStoreRepository
-from .services.answer_generator import AnswerGenerator, LLMPort
+from .services.answer_generator import AnswerGenerator, HISTORY_WINDOW, LLMPort
+from .services.conversation_memory import ConversationMemory
 from .services.chat_service import ChatService
 from .services.query_condenser import QueryCondenser
 
@@ -91,9 +92,11 @@ def _build_service() -> ChatService:
         temperature=settings.temperature,
         max_tokens=settings.max_tokens,
     )
-    generator = AnswerGenerator(_LangChainLLMAdapter(llm), settings)
+    adapter = _LangChainLLMAdapter(llm)
+    generator = AnswerGenerator(adapter, settings)
     condenser = QueryCondenser()
-    return ChatService(retriever, generator, condenser, settings, corpus=chunks)
+    memory = ConversationMemory(adapter, window_size=HISTORY_WINDOW, summary_threshold=HISTORY_WINDOW)
+    return ChatService(retriever, generator, condenser, settings, corpus=chunks, memory=memory)
 
 
 @asynccontextmanager

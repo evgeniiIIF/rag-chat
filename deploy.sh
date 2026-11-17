@@ -76,7 +76,7 @@ dump_diag() {
 
 die()  { printf "  \033[1;31m✖\033[0m %s\n" "$*" >&2; dump_diag; exit 1; }
 
-PS4="+ [\t] L${BASH_SOURCE##*/}:${LINENO}> "
+PS4="+ [\t] L${BASH_SOURCE:-stdin}:${LINENO}> "
 set -x
 trap 'rc=$?; printf "  \033[1;31m✖\033[0m FAIL exit=%s строка=%s: %s\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; dump_diag; exit "$rc"' ERR
 
