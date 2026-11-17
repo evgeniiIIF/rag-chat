@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .answer_generator import LLMPort, NO_ANSWER_MARKER
+from .answer_generator import NO_ANSWER_MARKER, LLMPort
 
 CHECK_PROMPT = (
     "Ты — строгий валидатор. Проверь, подтверждается ли ответ контекстом.\n"

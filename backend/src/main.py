@@ -62,11 +62,13 @@ def _build_service() -> ChatService:
     if has_data:
         # Инвалидация по хэшу: если документ не менялся — загружаем, иначе пересобираем
         from pathlib import Path as _Path
+
         data_dir = _Path(settings.data_dir)
         docx_files = sorted(data_dir.glob("*.docx"))
         if docx_files:
             source_file = docx_files[0]
             from .repositories.vector_store import content_hash
+
             h = content_hash(source_file)
             if store_repo.is_indexed(source_file):
                 log.info("Индекс актуален (хэш совпал), загружаем без пересборки")
@@ -115,6 +117,7 @@ async def health() -> dict[str, str]:
 @app.get("/health/readiness")
 async def readiness() -> dict[str, str]:
     from fastapi import HTTPException
+
     if getattr(app.state, "chat_service", None) is None:
         raise HTTPException(status_code=503, detail="not ready")
     return {"status": "ready"}

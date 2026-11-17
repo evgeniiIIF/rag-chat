@@ -8,16 +8,31 @@ from ..core.config import Settings
 from ..models.chunk import Chunk
 from ..models.grounding import Grounding
 from ..models.retrieved import RetrievedChunk
+from ..models.turn import Turn
 from ..schemas.chat import ChatRequest, ChatResponse
 from .answer_gate import NOT_ANSWERABLE_TEXT, gate
-from .answer_generator import NO_ANSWER_MARKER, AnswerGenerator
+from .answer_generator import AnswerGenerator
 from .chat_presenter import present
 from .guardrail import InputGuardrail
 from .query_condenser import QueryCondenser
 
 CONTEXT_NEIGHBORS: int = 2
 
-GREETINGS = {"привет", "прив", "здравствуйте", "здрасьте", "добрый день", "добрый вечер", "хай", "ку", "здорово", "салют", "hi", "hello", "дароу"}
+GREETINGS = {
+    "привет",
+    "прив",
+    "здравствуйте",
+    "здрасьте",
+    "добрый день",
+    "добрый вечер",
+    "хай",
+    "ку",
+    "здорово",
+    "салют",
+    "hi",
+    "hello",
+    "дароу",
+}
 THANKS = {"спасибо", "благодарю", "спс"}
 BYE = {"пока", "до свидания", "бай"}
 
@@ -40,28 +55,30 @@ class ChatService:
 
     def ask(self, request: ChatRequest) -> ChatResponse:
         q = request.question.strip()
+        history = list(request.history)
 
-        # 1. Input Guardrail (защита от мусора)
         if not self._guardrail.check(q):
-            return present("Я ассистент по банкротству. Пожалуйста, задавайте вопросы по делу.", Grounding.NOT_ANSWERABLE, [], [])
+            return present(
+                "Я ассистент по банкротству. Пожалуйста, задавайте вопросы по делу.",
+                Grounding.NOT_ANSWERABLE,
+                [],
+                [],
+            )
 
-        # 2. Small talk (без поиска)
         if self._is_small_talk(q):
-            return present(self._small_talk_answer(q), Grounding.GROUNDED, [], [])
+            return present(self._small_talk_answer(q, history), Grounding.GROUNDED, [], [])
 
-        # 3. Поиск по документу
-        standalone = self._condenser.standalone(q, request.history)
+        standalone = self._condenser.standalone(q, history)
         k = request.k or self._settings.retriever_k
         hits: list[RetrievedChunk] = self._retriever.search(standalone, k)  # type: ignore[attr-defined]
         expanded = self._expand(hits)
 
-        # 4. Генерация
         answer: str | None
         if not hits or _top(hits) < self._settings.score_threshold:
             answer = None
         else:
             context = [c.text for c in expanded]
-            answer = self._generator.generate(standalone, context)
+            answer = self._generator.generate(q, context, history)
 
         grounding = gate(hits, answer, self._settings)
         final = answer if grounding is Grounding.GROUNDED and answer else NOT_ANSWERABLE_TEXT
@@ -71,12 +88,23 @@ class ChatService:
         low = q.lower().strip()
         return any(word in low for word in GREETINGS | THANKS | BYE)
 
-    def _small_talk_answer(self, q: str) -> str:
+    def _already_greeted(self, history: Sequence[Turn]) -> bool:
+        for turn in history:
+            if turn.role != "assistant":
+                continue
+            low = turn.content.lower()
+            if any(word in low for word in ("привет", "здравствуй", "добрый день", "добрый вечер")):
+                return True
+        return False
+
+    def _small_talk_answer(self, q: str, history: Sequence[Turn]) -> str:
         low = q.lower().strip()
         if any(word in low for word in GREETINGS):
+            if self._already_greeted(history):
+                return "Мы уже на связи. Расскажите о вашей ситуации — чем помочь?"
             return "Привет! Я ассистент по банкротству. Чем могу помочь?"
         if any(word in low for word in THANKS):
-            return "Пожалуйста! Рад был помочь. Если есть ещё вопросы — спрашивайте."
+            return "Пожалуйста! Если есть ещё вопросы — спрашивайте."
         if any(word in low for word in BYE):
             return "До свидания! Если понадобится помощь — обращайтесь."
         return "Я на связи. Задайте вопрос по банкротству."

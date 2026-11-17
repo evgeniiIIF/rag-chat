@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+
 from ..models.turn import Turn
 from .answer_generator import LLMPort
 
@@ -10,6 +11,7 @@ SUMMARY_PROMPT = (
     "Суммируй следующий диалог в 2-3 предложениях, сохраняя ключевые факты и цели пользователя. "
     "Выведи только текст резюме."
 )
+
 
 class ConversationMemory:
     def __init__(self, llm: LLMPort, window_size: int = 6, summary_threshold: int = 10):
@@ -21,11 +23,11 @@ class ConversationMemory:
         """Возвращает (summary, recent_history)."""
         if len(history) <= self._summary_threshold:
             # Если история короткая — просто скользящее окно
-            return None, list(history[-self._window_size:])
+            return None, list(history[-self._window_size :])
 
         # Иначе — суммаризируем старые сообщения
-        old_messages = history[:-self._window_size]
-        recent = list(history[-self._window_size:])
+        old_messages = history[: -self._window_size]
+        recent = list(history[-self._window_size :])
 
         history_text = "\n".join(f"{t.role}: {t.content}" for t in old_messages)
         user_prompt = f"Диалог:\n{history_text}\n\nРезюме:"

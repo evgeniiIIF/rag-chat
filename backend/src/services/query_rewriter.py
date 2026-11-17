@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+
 from ..models.turn import Turn
 from .answer_generator import LLMPort
 
@@ -12,6 +13,7 @@ REWRITER_PROMPT = (
     "If the question is already standalone, return it as is. "
     "Return ONLY the rewritten question, without any explanations."
 )
+
 
 class QueryRewriter:
     def __init__(self, llm: LLMPort) -> None:

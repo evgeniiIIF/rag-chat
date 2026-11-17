@@ -69,3 +69,39 @@ def test_build_user_prompt_ignores_blank_context_parts() -> None:
 
 def test_normalize_trim() -> None:
     assert normalize("  hi  ") == "hi"
+
+
+def test_history_rendered_into_user_prompt() -> None:
+    from src.models.turn import Turn
+
+    prompt = build_user_prompt(
+        "Сколько стоит?",
+        ["Цена услуги — 5000 руб."],
+        [Turn(role="user", content="Хочу банкротство"), Turn(role="assistant", content="Здравствуйте!")],
+    )
+    assert "История диалога:" in prompt
+    assert "Пользователь: Хочу банкротство" in prompt
+    assert "Ассистент: Здравствуйте!" in prompt
+    assert "Вопрос: Сколько стоит?" in prompt
+
+
+def test_generate_accepts_history_without_breaking_contract() -> None:
+    captured: dict[str, str] = {}
+
+    class _LLM:
+        def complete(self, system: str, user: str) -> str:
+            captured["system"] = system
+            captured["user"] = user
+            return "ok"
+
+    from src.models.turn import Turn
+
+    gen = AnswerGenerator(_LLM(), settings=_settings())
+    out = gen.generate(
+        "Что с долгом?",
+        ["Долг списывается в процедуре."],
+        [Turn(role="user", content="Долг 1 млн"), Turn(role="assistant", content="Понял.")],
+    )
+    assert out == "ok"
+    assert "История диалога:" in captured["user"]
+    assert "Долг 1 млн" in captured["user"]
