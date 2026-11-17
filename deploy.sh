@@ -12,8 +12,9 @@ DISK_CLEAN_THRESHOLD="${DISK_CLEAN_THRESHOLD:-85}"
 
 usage() {
   cat <<USAGE
-usage: ./deploy.sh [--no-push] [--branch <b>] [--first]
-  --no-push        skip git push
+usage: ./deploy.sh            # обычный запуск: всё сам, без флагов
+  (флаги ниже — только для исключений)
+  --no-push        не трогать git (локальные коммиты уже на origin)
   --branch <b>     git branch (default: main)
   --first          on VPS: cp .env.example .env if .env missing
   --follow         после health-check: стрим docker compose logs -f
@@ -38,14 +39,31 @@ done
 
 log() { printf "\033[1;36m▸\033[0m %s\n" "$*"; }
 ok()  { printf "\033[1;32m✔\033[0m %s\n" "$*"; }
+warn() { printf "\033[1;33m!\033[0m %s\n" "$*"; }
 die() { printf "\033[1;31m✖\033[0m %s\n" "$*" >&2; exit 1; }
 
 [ -f "$SSH_KEY" ] || die "ssh key not found: $SSH_KEY"
 
 if [ "$NO_PUSH" -eq 0 ]; then
-  log "git push origin $BRANCH"
-  git push origin "$BRANCH"
-  ok "pushed"
+  log "git: автокоммит + push (флаги не нужны)"
+  CUR="$(git rev-parse --abbrev-ref HEAD)"
+  [ "$CUR" = "$BRANCH" ] || die "ты на ветке '$CUR', деплоим '$BRANCH' → git checkout $BRANCH"
+  if [ -n "$(git status --porcelain)" ]; then
+    warn "незакоммиченные изменения → коммичу сам: $(git status --porcelain | head -3 | tr '\n' ' ')"
+    git add -A
+    git commit -m "deploy: $(date +'%Y-%m-%d %H:%M')" | sed "s/^/    /"
+    ok "committed"
+  else
+    ok "рабочее дерево чистое"
+  fi
+  git fetch origin "$BRANCH" 2>&1 | sed "s/^/    /" || true
+  AHEAD="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 1)"
+  if [ "$AHEAD" = "0" ]; then
+    ok "нечего пушить — origin уже актуален"
+  else
+    git push origin "$BRANCH" 2>&1 | sed "s/^/    /" || die "git push не прошёл (конфликт с origin/$BRANCH? сделай git pull --rebase)"
+    ok "pushed ($AHEAD коммитов)"
+  fi
 fi
 
 log "ssh $SSH_USER@$SSH_HOST → remote deploy (trace + лог на VPS)"
@@ -80,7 +98,37 @@ PS4="+ [\t] L${BASH_SOURCE:-stdin}:${LINENO}> "
 set -x
 trap 'rc=$?; printf "  \033[1;31m✖\033[0m FAIL exit=%s строка=%s: %s\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; dump_diag; exit "$rc"' ERR
 
-disk_pct()  { df --output=pcent / | tail -1 | tr -dc "0-9"; }
+disk_mounts() {  # все реально используемые разделы: /, /home, $HOME
+  { echo /; echo /home; echo "$HOME"; } | sort -u | while read -r m; do
+    df --output=target,pcent "$m" 2>/dev/null | tail -1
+  done
+}
+disk_max_pct() { disk_mounts | awk '{gsub("%","",$2); if ($2+0>m) m=$2+0} END {print m}'; }
+disk_report()  { disk_mounts | sed "s/^/      /"; }
+
+cleanup_disk() {  # volumes НЕ трогаем — иначе снесется chroma_db
+  if [ "${1:-0}" = "1" ]; then
+    warn "агрессивная чистка: builder-кэш + неиспользуемые образы + журнал + apt"
+    docker builder prune -af >/dev/null 2>&1 || true
+    docker system prune -af >/dev/null 2>&1 || true
+    sudo -n journalctl --vacuum-size=100M >/dev/null 2>&1 || true
+    sudo -n apt-get clean >/dev/null 2>&1 || true
+  else
+    docker builder prune -f >/dev/null 2>&1 || true
+    docker image prune -f >/dev/null 2>&1 || true
+  fi
+}
+
+try_build() {
+  docker compose -f "$COMPOSE_FILE" build --pull --progress=plain 2>&1 | stdbuf -oL sed -u "s/^/    /"
+}
+build_with_retry() {
+  try_build && return 0
+  warn "build упал (частая причина = no space left on device) → чистка места и 1 повтор"
+  cleanup_disk 1
+  disk_report
+  try_build
+}
 disk_info() { df -h / | tail -1 | awk "{print \$3\" / \"\$2\" (\"\$5\")\"}"; }
 
 echo "──────────────────────────────────────────────"
@@ -90,17 +138,18 @@ echo "────────────────────────�
 [ -n "$REMOTE_DIR" ] || die "REMOTE_DIR empty"
 cd "$REMOTE_DIR" || die "cd $REMOTE_DIR failed"
 
-log "preflight: disk"
-D0=$(disk_pct)
-echo "    /: $(disk_info)"
-if [ "$D0" -ge "$TH" ]; then
-  warn "disk ≥ ${TH}% → prune images + build cache"
-  docker image prune -af 2>&1 | tail -n 3 | sed "s/^/    /" || true
-  docker builder prune -af 2>&1 | tail -n 3 | sed "s/^/    /" || true
-  ok "after prune: $(disk_info)"
-else
-  ok "disk ok: ${D0}% < ${TH}%"
+log "preflight: диск (все разделы)"
+disk_report
+P=$(disk_max_pct)
+echo "    максимум: ${P}% (порог ${TH}%)"
+cleanup_disk 0
+if [ "${P:-0}" -ge "$TH" ]; then
+  warn "есть раздел ≥ ${TH}% → агрессивная чистка ДО сборки"
+  cleanup_disk 1
+  disk_report
+  [ "$(disk_max_pct)" -lt "$TH" ] || die "диск всё ещё ≥ ${TH}% — освободи место руками (список разделов выше)"
 fi
+ok "диск ок: $(disk_info)"
 
 log "down --remove-orphans"
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>&1 | sed "s/^/    /" || true
@@ -122,8 +171,8 @@ if [ ! -f .env ]; then
 fi
 ok ".env present"
 
-log "build --pull (stream)"
-docker compose -f "$COMPOSE_FILE" build --pull --progress=plain 2>&1 | stdbuf -oL sed -u "s/^/    /"
+log "build --pull (stream, авто-чистка + 1 повтор)"
+build_with_retry
 ok "images built"
 
 log "up -d --wait --remove-orphans"
