@@ -52,7 +52,7 @@ def main():
     dataset = EvaluationDataset(samples=samples)
 
     base_url = os.environ["OPENAI_BASE_URL"]
-    llm = llm_factory("deepseek/deepseek-v3.2", base_url=base_url)
+    llm = llm_factory("deepseek/deepseek-v4.1-flash-1017", base_url=base_url)
 
     run_config = RunConfig(max_workers=2, timeout=300, max_retries=5)
 

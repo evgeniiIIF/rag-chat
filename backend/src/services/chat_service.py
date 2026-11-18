@@ -1,152 +1,180 @@
-"""Оркестратор /chat: Guardrail -> Small Talk -> Поиск -> Генерация."""
+"""Оркестратор /chat (цепочка chat_v2, узел 16) — тонкий слой, только порядок узлов.
+
+19 🛡️ Guardrail → 20 🛡️ SocialBranch → 07 🗄️ SessionStore → 09 🧭 TurnAnalyzer →
+10 💎 DialogState.merge → 13 🧭 Policy → 11 🗄️ HybridRetriever(запрос = Analysis.question) →
+12 🚦 RelevanceGate → 14 🧭 AnswerGenerator → 15 🚦 AnswerGate → 17 🎛️ Presenter.
+
+Понимание речи, темы, нехватка данных и «знаем/не знаем» — у модели (D2). Правила
+выдумывания фактов запрещены (D3): ниже по коду нет ни одной строки с фактами о компании,
+кроме аварийных фолбэков guardrail/no-match, которые ничего не утверждают.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Protocol
 
 from ..core.config import Settings
+from ..models.analysis import Analysis
 from ..models.chunk import Chunk
+from ..models.dialog_state import DialogState
 from ..models.grounding import Grounding
 from ..models.retrieved import RetrievedChunk
 from ..models.turn import Turn
 from ..schemas.chat import ChatRequest, ChatResponse
-from .answer_gate import NOT_ANSWERABLE_TEXT, gate
-from .answer_generator import HISTORY_WINDOW, AnswerGenerator
+from .answer_gate import NO_ANSWER_MARKER, gate
+from .answer_generator import AnswerGenerator
 from .chat_presenter import present
-from .conversation_memory import ConversationMemory
 from .guardrail import InputGuardrail
-from .query_condenser import QueryCondenser
+from .policy import Action, Decision, Policy
+from .relevance_gate import RelevanceGate
+from .session_store import SessionStore, dedupe_turns
+from .social_branch import SocialBranch
+from .topics_map import Topics, TopicsMap
+from .turn_analyzer import TurnAnalyzer
 
 CONTEXT_NEIGHBORS: int = 2
 
-GREETINGS = {
-    "привет",
-    "прив",
-    "здравствуйте",
-    "здрасьте",
-    "добрый день",
-    "добрый вечер",
-    "хай",
-    "ку",
-    "здорово",
-    "салют",
-    "hi",
-    "hello",
-    "дароу",
-}
-THANKS = {"спасибо", "благодарю", "спс"}
-BYE = {"пока", "до свидания", "бай"}
+# Аварийные реплики: ничего не утверждают о продукте, поэтому не могут сгаллюцинировать (D1).
+GUARDRAIL_REPLY: str = "Я ассистент по банкротству. Задавайте вопросы про долги и списание."
+NO_MATCH_REPLY: str = "По этому вопросу точный ответ даст юрист на бесплатной консультации."
+
+# Действия, которым нужен контекст из базы.
+NEEDS_CONTEXT: frozenset[Action] = frozenset({Action.ANSWER, Action.ASK_ONE})
+# Действия «по-человечески», без ссылки на документ: не показываем плашку «не найдено».
+CONVERSATIONAL: frozenset[Action] = frozenset({Action.HANDOFF, Action.REPHRASE})
+
+
+class SearchPort(Protocol):
+    def search(self, question: str, k: int) -> list[RetrievedChunk]: ...
 
 
 class ChatService:
     def __init__(
         self,
-        retriever: object,
+        retriever: SearchPort,
         generator: AnswerGenerator,
-        condenser: QueryCondenser,
+        analyzer: TurnAnalyzer,
+        topics_map: TopicsMap,
+        store: SessionStore,
         settings: Settings,
         corpus: Sequence[Chunk] | None = None,
-        memory: ConversationMemory | None = None,
+        policy: Policy | None = None,
+        relevance: RelevanceGate | None = None,
+        guardrail: InputGuardrail | None = None,
     ) -> None:
         self._retriever = retriever
         self._generator = generator
-        self._condenser = condenser
+        self._analyzer = analyzer
+        self._topics_map = topics_map
+        self._store = store
         self._settings = settings
         self._corpus: list[Chunk] = list(corpus or [])
-        self._guardrail = InputGuardrail()
-        self._memory = memory
+        self._policy = policy or Policy()
+        self._relevance = relevance or RelevanceGate(settings.score_threshold)
+        self._guardrail = guardrail or InputGuardrail()
+        self._topics: Topics | None = None
 
     def ask(self, request: ChatRequest) -> ChatResponse:
-        q = request.question.strip()
+        question = request.question.strip()
         history = list(request.history)
 
-        if not self._guardrail.check(q):
-            return present(
-                "Я ассистент по банкротству. Пожалуйста, задавайте вопросы по делу.",
-                Grounding.NOT_ANSWERABLE,
-                [],
-                [],
-            )
+        if not question or not self._guardrail.check(question):
+            return present(GUARDRAIL_REPLY, Grounding.NOT_ANSWERABLE, [], [])
 
-        if self._is_small_talk(q):
-            return present(self._small_talk_answer(q, history), Grounding.GROUNDED, [], [])
+        canned = SocialBranch.replica(question, history)
+        if canned is not None:
+            self._commit(request.session_id, history, DialogState.empty(), question, canned)
+            return present(canned, Grounding.SOCIAL, [], [])
 
-        summary, recent_history = self._recent(history)
-        standalone = self._condenser.standalone(q, recent_history)
-        k = request.k or self._settings.retriever_k
-        hits: list[RetrievedChunk] = self._retriever.search(standalone, k)  # type: ignore[attr-defined]
-        expanded = self._expand(hits)
+        session = self._store.load(request.session_id)
+        turns = dedupe_turns(session.turns, history)
+        analysis = self._analyzer.analyze(question, turns, session.state, self._topics_of_corpus())
+        state = session.state.merged(analysis.facts, analysis.asked_already)
+        decision = self._policy.decide(analysis, state)
 
-        answer: str | None
-        if not hits or _top(hits) < self._settings.score_threshold:
-            answer = None
-        else:
-            context = [c.text for c in expanded]
-            answer = self._generator.generate(q, context, recent_history, summary=summary)
+        hits: list[RetrievedChunk] = []
+        expanded: list[Chunk] = []
+        if decision.action in NEEDS_CONTEXT:
+            hits, expanded, decision = self._retrieve(request, analysis, decision)
 
-        grounding = gate(hits, answer, self._settings)
-        final = answer if grounding is Grounding.GROUNDED and answer else NOT_ANSWERABLE_TEXT
-        return present(final, grounding, hits, expanded)
+        if decision.action is Action.ASK_ONE and decision.ask_about:
+            # помечаем, о чём спросили, сами и только когда вопрос реально задаётся (A5)
+            state = state.merged(asked=[decision.ask_about])
 
-    def _recent(self, history: list[Turn]) -> tuple[str | None, list[Turn]]:
-        """Окно истории (+ резюме старых реплик): диалог не должен перекрывать документ."""
-        if not history:
-            return None, []
-        if self._memory is not None:
-            return self._memory.get_processed_history(history)
-        return None, list(history[-HISTORY_WINDOW:])
+        answer = self._generator.generate(question, [c.text for c in expanded], decision, state, analysis, turns)
+        grounding = self._grounding(decision, hits, answer)
+        if answer == NO_ANSWER_MARKER:
+            answer = NO_MATCH_REPLY
 
-    def _is_small_talk(self, q: str) -> bool:
-        low = q.lower().strip()
-        return any(word in low for word in GREETINGS | THANKS | BYE)
+        self._commit(request.session_id, turns, state, question, answer)
+        return present(answer, grounding, hits, expanded)
 
-    def _already_greeted(self, history: Sequence[Turn]) -> bool:
-        for turn in history:
-            if turn.role != "assistant":
-                continue
-            low = turn.content.lower()
-            if any(word in low for word in ("привет", "здравствуй", "добрый день", "добрый вечер")):
-                return True
-        return False
+    def _retrieve(
+        self,
+        request: ChatRequest,
+        analysis: Analysis,
+        decision: Decision,
+    ) -> tuple[list[RetrievedChunk], list[Chunk], Decision]:
+        """Поиск по формулировке модели (без истории) + проверка релевантности выдачи."""
+        query = analysis.question.strip() or request.question.strip()
+        hits = self._retriever.search(query, request.k or self._settings.retriever_k)
+        if self._relevance.judge(hits).enough:
+            return hits, self._expand(hits), decision
+        if decision.action is Action.ASK_ONE:
+            # вопрос квалификации задаём и без найденного контекста: факты не выдумываем (D3)
+            return hits, [], decision
+        return hits, [], Decision(action=Action.DECLINE_OFFTOPIC, style=analysis.style)
 
-    def _small_talk_answer(self, q: str, history: Sequence[Turn]) -> str:
-        low = q.lower().strip()
-        if any(word in low for word in GREETINGS):
-            if self._already_greeted(history):
-                return "Мы уже на связи. Расскажите о вашей ситуации — чем помочь?"
-            return "Привет! Я ассистент по банкротству. Чем могу помочь?"
-        if any(word in low for word in THANKS):
-            return "Пожалуйста! Если есть ещё вопросы — спрашивайте."
-        if any(word in low for word in BYE):
-            return "До свидания! Если понадобится помощь — обращайтесь."
-        return "Я на связи. Задайте вопрос по банкротству."
+    def _grounding(self, decision: Decision, hits: Sequence[RetrievedChunk], answer: str) -> Grounding:
+        if decision.action in CONVERSATIONAL:
+            return Grounding.SOCIAL
+        if decision.action in NEEDS_CONTEXT:
+            return gate(hits, answer, self._settings)
+        return Grounding.NOT_ANSWERABLE
+
+    def _commit(
+        self,
+        session_id: str | None,
+        turns: Sequence[Turn],
+        state: DialogState,
+        question: str,
+        answer: str,
+    ) -> None:
+        """Сохранить ход. Без session_id состояние не копится (обратная совместимость)."""
+        if not session_id:
+            return
+        nxt = dedupe_turns(
+            turns,
+            [Turn(role="user", content=question), Turn(role="assistant", content=answer)],
+        )
+        self._store.save(session_id, state, nxt)
+
+    def _topics_of_corpus(self) -> Topics:
+        if self._topics is None:
+            self._topics = self._topics_map.of(self._corpus)
+        return self._topics
 
     def _expand(self, hits: Sequence[RetrievedChunk]) -> list[Chunk]:
+        """Дотянуть соседей по документу: окна поиска часто режут мысль пополам."""
         if not self._corpus:
             return [h.chunk for h in hits]
-        seen: set[tuple[str, int, int, int]] = set()
-        out: list[Chunk] = []
         span_index: dict[tuple[str, int], list[int]] = {}
         for i, c in enumerate(self._corpus):
             span_index.setdefault((c.source, c.span.start), []).append(i)
+        seen: set[int] = set()
+        out: list[Chunk] = []
         for hit in hits:
-            key = (hit.chunk.source, hit.chunk.span.start)
-            positions = span_index.get(key, [])
+            positions = span_index.get((hit.chunk.source, hit.chunk.span.start), [])
             if not positions:
                 out.append(hit.chunk)
                 continue
             for pos in positions:
-                lo = max(0, pos - CONTEXT_NEIGHBORS)
-                hi = min(len(self._corpus) - 1, pos + CONTEXT_NEIGHBORS)
-                for j in range(lo, hi + 1):
-                    c = self._corpus[j]
-                    k2 = (c.source, c.span.start, c.span.end, j)
-                    if k2 in seen:
+                for j in range(
+                    max(0, pos - CONTEXT_NEIGHBORS), min(len(self._corpus) - 1, pos + CONTEXT_NEIGHBORS) + 1
+                ):
+                    if j in seen:
                         continue
-                    seen.add(k2)
-                    out.append(c)
+                    seen.add(j)
+                    out.append(self._corpus[j])
         return out
-
-
-def _top(hits: Sequence[RetrievedChunk]) -> float:
-    return max((hit.score for hit in hits), default=0.0)

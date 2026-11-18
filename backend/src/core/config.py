@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     score_threshold: float = Field(0.35, ge=0.0, le=1.0, alias="SCORE_THRESHOLD")
     temperature: float = Field(0.0, ge=0.0, le=1.0, alias="TEMPERATURE")
     max_tokens: int = Field(500, ge=50, le=4000, alias="MAX_TOKENS")
+    session_ttl_seconds: int = Field(86400, ge=60, le=604800, alias="SESSION_TTL_SECONDS")
+    session_max_sessions: int = Field(1000, ge=1, le=100000, alias="SESSION_MAX_SESSIONS")
+    session_max_turns: int = Field(30, ge=2, le=100, alias="SESSION_MAX_TURNS")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field("INFO", alias="LOG_LEVEL")
 
 

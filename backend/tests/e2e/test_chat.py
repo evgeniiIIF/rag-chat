@@ -63,3 +63,18 @@ async def test_query_alias_returns_same_shape(client: httpx.AsyncClient) -> None
     r = await client.post("/query", json={"question": "q"})
     assert r.status_code == 200
     assert set(r.json().keys()) == {"answer", "sources", "grounded", "top_score"}
+
+
+async def test_session_id_and_long_history_accepted(client: httpx.AsyncClient) -> None:
+    """S04: session_id опционален, история допускается до 30 реплик (обратная совместимость)."""
+    history = [{"role": "user" if i % 2 else "assistant", "content": f"реплика {i}"} for i in range(30)]
+    r = await client.post("/chat", json={"question": "С какого года?", "session_id": "s-1", "history": history})
+    assert r.status_code == 200
+
+
+async def test_history_over_limit_and_bad_session_id_rejected(client: httpx.AsyncClient) -> None:
+    too_long = [{"role": "user", "content": "q"} for _ in range(31)]
+    r = await client.post("/chat", json={"question": "С какого года?", "history": too_long})
+    assert r.status_code == 422
+    r = await client.post("/chat", json={"question": "С какого года?", "session_id": ""})
+    assert r.status_code == 422

@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 from ..models.turn import Turn
 
+HISTORY_MAX_TURNS: int = 30
+
 
 class SourceSchema(BaseModel):
     source: str
@@ -16,7 +18,8 @@ class SourceSchema(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
-    history: list[Turn] = Field(default_factory=list, max_length=10)
+    history: list[Turn] = Field(default_factory=list, max_length=HISTORY_MAX_TURNS)
+    session_id: str | None = Field(None, min_length=1, max_length=64)
     k: int | None = Field(None, ge=1, le=10)
 
 

@@ -46,11 +46,6 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
             </div>
             <div className="min-w-0">
               <div className="whitespace-pre-wrap break-words">{m.text}</div>
-              {m.response && !m.response.grounded && (
-                <div className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                  Ответа в документе не найдено.
-                </div>
-              )}
             </div>
           </div>
         </li>

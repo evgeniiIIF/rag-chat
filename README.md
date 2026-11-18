@@ -51,10 +51,10 @@ E2E (Playwright) требует браузеры (\`npx playwright install chrom
 ## Оценка качества (RAGAS)
 
 \`\`\`bash
+# Один прогон: ./ragas.sh (сам поднимет backend и дождётся индекса)
 # Golden set: backend/eval/golden_set.json (10 вопросов)
-# Запуск RAGAS (требует API-ключ polza.ai):
 cd eval
-uv run python ../backend/eval/run_ragas.py
+uv run python ../backend/eval/run_ragas.py   # без uv: ../eval/.venv/bin/python ../backend/eval/run_ragas.py
 \`\`\`
 
 **Faithfulness: 0.845** (цель > 0.90, enterprise-уровень).

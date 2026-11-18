@@ -16,7 +16,8 @@ def present(
     hits: Sequence[RetrievedChunk],
     expanded: Sequence[Chunk] | None = None,
 ) -> ChatResponse:
-    grounded = grounding is Grounding.GROUNDED
+    """SOCIAL не требует источника, но и не считается промахом — плашку не показываем."""
+    grounded = grounding in (Grounding.GROUNDED, Grounding.SOCIAL)
     chunks = expanded if expanded is not None else [h.chunk for h in hits]
     sources: list[SourceSchema] = []
     if grounded:

@@ -26,7 +26,8 @@ export type ChatTurn = z.infer<typeof chatTurnSchema>;
 
 export const chatRequestSchema = z.object({
   question: z.string().min(1).max(2000),
-  history: z.array(chatTurnSchema).max(10).optional(),
+  history: z.array(chatTurnSchema).max(30).optional(),
+  session_id: z.string().min(1).max(64).optional(),
   k: z.number().int().min(1).max(10).optional(),
 });
 

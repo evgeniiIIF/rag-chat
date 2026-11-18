@@ -27,10 +27,18 @@ describe("chat zod schemas", () => {
   });
 
   it("validates history length in request", () => {
-    const tooLong = Array.from({ length: 11 }, () => ({
+    const tooLong = Array.from({ length: 31 }, () => ({
       role: "user" as const,
       content: "q",
     }));
     expect(() => chatRequestSchema.parse({ question: "q", history: tooLong })).toThrow();
+    const ok = Array.from({ length: 30 }, () => ({ role: "user" as const, content: "q" }));
+    expect(() => chatRequestSchema.parse({ question: "q", history: ok })).not.toThrow();
+  });
+
+  it("accepts an optional session_id and bounds its length", () => {
+    expect(() => chatRequestSchema.parse({ question: "q", session_id: "abc" })).not.toThrow();
+    expect(() => chatRequestSchema.parse({ question: "q", session_id: "" })).toThrow();
+    expect(() => chatRequestSchema.parse({ question: "q", session_id: "x".repeat(65) })).toThrow();
   });
 });

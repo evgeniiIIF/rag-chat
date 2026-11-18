@@ -17,10 +17,14 @@ from .repositories.docx_loader import DocxParagraphLoader, merge_adjacent
 from .repositories.embeddings import OpenAIEmbeddingsAdapter
 from .repositories.hybrid_retriever import HybridRetriever
 from .repositories.vector_store import VectorStoreRepository
-from .services.answer_generator import AnswerGenerator, HISTORY_WINDOW, LLMPort
-from .services.conversation_memory import ConversationMemory
+from .services.answer_generator import AnswerGenerator
 from .services.chat_service import ChatService
-from .services.query_condenser import QueryCondenser
+from .services.llm_port import LLMPort
+from .services.policy import Policy
+from .services.relevance_gate import RelevanceGate
+from .services.session_store import SessionStore
+from .services.topics_map import TopicsMap
+from .services.turn_analyzer import TurnAnalyzer
 
 
 class _LangChainLLMAdapter(LLMPort):
@@ -93,10 +97,22 @@ def _build_service() -> ChatService:
         max_tokens=settings.max_tokens,
     )
     adapter = _LangChainLLMAdapter(llm)
-    generator = AnswerGenerator(adapter, settings)
-    condenser = QueryCondenser()
-    memory = ConversationMemory(adapter, window_size=HISTORY_WINDOW, summary_threshold=HISTORY_WINDOW)
-    return ChatService(retriever, generator, condenser, settings, corpus=chunks, memory=memory)
+    store = SessionStore(
+        ttl_seconds=settings.session_ttl_seconds,
+        max_sessions=settings.session_max_sessions,
+        max_turns=settings.session_max_turns,
+    )
+    return ChatService(
+        retriever=retriever,
+        generator=AnswerGenerator(adapter, settings),
+        analyzer=TurnAnalyzer(adapter),
+        topics_map=TopicsMap(adapter),
+        store=store,
+        settings=settings,
+        corpus=chunks,
+        policy=Policy(),
+        relevance=RelevanceGate(settings.score_threshold),
+    )
 
 
 @asynccontextmanager

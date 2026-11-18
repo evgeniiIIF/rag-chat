@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect, useLayoutEffect } from "react";
-import { useChat, type ChatResponse } from "@/features/chat";
+import { useChat, getSessionId, type ChatResponse } from "@/features/chat";
 import { UIInput } from "@/shared/ui";
 import { ChatMessageList } from "@/components/ChatMessageList";
 
@@ -39,8 +39,8 @@ export function ChatPage(): JSX.Element {
     inputRef.current?.focus({ preventScroll: true });
     setMessages((prev) => [...prev, { id: nextId(), role: "user", text: q }]);
     try {
-      const history = messages.slice(-10).map((m) => ({ role: m.role, content: m.text }));
-      const response = await mutateAsync({ question: q, history });
+      const history = messages.slice(-30).map((m) => ({ role: m.role, content: m.text }));
+      const response = await mutateAsync({ question: q, history, session_id: getSessionId() });
       setMessages((prev) => [...prev, { id: nextId(), role: "assistant", text: response.answer, response }]);
     } catch {
       setMessages((prev) => [...prev, { id: nextId(), role: "assistant", text: "Ошибка сети. Попробуйте еще раз." }]);
