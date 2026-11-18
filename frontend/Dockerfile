@@ -4,8 +4,7 @@ COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.cjs index.html ./
 COPY src ./src
-# public опционален: в репо может отсутствовать
-RUN if [ -d public ]; then cp -r public ./public; fi
+COPY public ./public
 RUN npm run build
 
 FROM nginx:1.27-alpine AS runtime
