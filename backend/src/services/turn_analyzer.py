@@ -1,10 +1,9 @@
 """Понимание одной реплики клиента (цепочка chat_v2, узел 09).
 
-Один вызов LLM-порта → JSON → Analysis. Здесь живёт ФОРМАТ ответа модели и сборка входов
-(темы корпуса, критерии квалификации, история, известное состояние). Понимание речи и
-извлечение фактов — у модели (D2). Код лишь нормализует структуру: приводит asked_already к
-дословным меткам критериев корпуса и считает missing как «критерии минус известные факты».
-Знаний о предметной области в этом модуле нет.
+Один вызов LLM-порта → JSON → Analysis. Модель понимает речь и извлекает факты (D2); код лишь
+нормализует структуру: значения фактов — строки, ключи фактов о критериях приводятся к
+дословным меткам условий корпуса, missing = условия без известных значений. Знаний о предметной
+области в модуле нет: условия, их формат и примеры приходят из корпуса (Topics.qualify).
 """
 
 from __future__ import annotations
@@ -16,14 +15,15 @@ from collections.abc import Sequence
 from pydantic import ValidationError
 
 from ..models.analysis import Analysis
+from ..models.criteria import Criterion, CriterionKind
 from ..models.dialog_state import DialogState
 from ..models.turn import Turn
 from .llm_port import LLMPort
+from .qualification import same_label
 from .topics_map import Topics
 
 HISTORY_TURNS: int = 10
-TURN_CHARS: int = 300
-MIN_LABEL_CHARS: int = 5
+TURN_CHARS: int = 500
 
 _REPLY_SHAPE: str = json.dumps(
     {
@@ -46,23 +46,23 @@ ANALYZER_SYSTEM: str = (
     "Верни ТОЛЬКО один JSON-объект без пояснений и без markdown:\n"
     + _REPLY_SHAPE
     + "\nПравила:\n"
-    "- scope=off_kb, если сообщение не про долги, банкротство, услуги и условия работы компании и его темы "
-    "нет в списке тем базы знаний. Не угадывай, что клиент «скорее всего имел в виду», и не подменяй его "
-    "вопрос похожим.\n"
+    "- scope=off_kb, только если сообщение вообще не про долги, банкротство, услуги, цену, регионы и "
+    "условия работы компании, юриста или консультацию. Не угадывай, что клиент «скорее всего имел в "
+    "виду», и не подменяй его вопрос похожим.\n"
     "- scope=clarify, если клиент не понял вопрос ассистента или просит объяснить проще.\n"
-    "- scope=in_kb для всего остального, что касается долгов, списания, банкротства, денег, документов, "
-    "регионов, рассрочки, стоимости услуг, юриста и консультации.\n"
-    "- question — самостоятельная формулировка запроса для поиска по базе: без «он/это/там», целиком из "
-    "смысла текущего сообщения.\n"
-    "- facts — только то, что клиент САМ сообщил в текущем сообщении или в истории. Пустой объект, если "
-    "ничего нового. Ничего не додумывай. Если клиент назвал значение критерия квалификации, ключ факта — "
-    "метка критерия дословно. Часть величины, похожая или смежная величина — НЕ значение критерия: не "
-    "записывай её под меткой критерия.\n"
-    "- missing — критерии квалификации из списка, значений которых ещё нет в известных фактах. Метки "
-    "копируй из списка дословно, в порядке списка. Если список пуст или все критерии известны — пустой "
-    "массив.\n"
-    "- asked_already — критерии из того же списка, о которых ассистент УЖЕ спрашивал в истории (метка "
-    "дословно).\n"
+    "- scope=in_kb для всего остального.\n"
+    "- question — самостоятельная формулировка запроса для поиска по базе: без «он/это/там», целиком "
+    "из смысла текущего сообщения (при необходимости — с учётом последнего вопроса ассистента).\n"
+    "- facts — только то, что клиент САМ сообщил в текущем сообщении или в истории. Все значения — "
+    "строки. Пустой объект, если ничего нового. Ничего не додумывай.\n"
+    "- Значение критерия квалификации записывай под меткой критерия дословно и в формате, указанном в "
+    "списке критериев. Ответ клиента на недавний вопрос ассистента о критерии (например, «310к всего») "
+    "— это значение этого критерия.\n"
+    "- Часть величины, отдельный платёж, рассрочка или другая смежная величина — НЕ значение критерия, "
+    "если клиент не сказал, что это и есть всё: не записывай её под меткой критерия.\n"
+    "- missing — метки критериев, значений которых у клиента ещё нет (дословно из списка); если все "
+    "известны — пустой массив.\n"
+    "- asked_already — метки критериев, о которых ассистент УЖЕ спрашивал в истории (дословно).\n"
     "- wants_consultation=true, если клиент сам просит юриста, консультацию, встречу или звонок либо "
     "согласен на них. Определяй это независимо от scope.\n"
     "- style: one_line — когда вопрос простой; reassure — когда клиент нервничает или стыдится; "
@@ -86,29 +86,48 @@ def _extract_json(raw: str) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
-def _norm(text: str) -> str:
-    return " ".join(text.lower().replace("ё", "е").split())
+def _stringify_facts(data: dict[str, object]) -> dict[str, object]:
+    """Значения фактов → строки: модель может вернуть число (310000), схема ждёт str."""
+    facts = data.get("facts")
+    if not isinstance(facts, dict):
+        return data
+    return {**data, "facts": {str(k): str(v) for k, v in facts.items() if v is not None}}
 
 
-def _same(left: str, right: str) -> bool:
-    """Одна и та же метка: совпадение или вхождение (короткая сторона не короче MIN_LABEL_CHARS)."""
-    a, b = _norm(left), _norm(right)
-    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
-    return bool(short) and (short == long_ or (len(short) >= MIN_LABEL_CHARS and short in long_))
+def _snap(analysis: Analysis, criteria: Sequence[Criterion], state: DialogState) -> Analysis:
+    """Ключи фактов → метки условий; missing = условия без значений; asked_already — метки условий."""
+    labels = [c.label for c in criteria]
+    facts: dict[str, str] = {}
+    for key, value in analysis.facts.items():
+        canonical = next((label for label in labels if same_label(label, key)), key)
+        facts[canonical] = value
+    known = [key for key, value in {**state.facts, **facts}.items() if str(value).strip()]
+    missing = [label for label in labels if not any(same_label(label, key) for key in known)]
+    asked = [label for label in labels if any(same_label(label, item) for item in analysis.asked_already)]
+    return analysis.model_copy(update={"facts": facts, "missing": missing, "asked_already": asked})
 
 
-def _canonical(labels: Sequence[str], qualify: Sequence[str]) -> list[str]:
-    """Метки модели → дословные метки критериев (порядок корпуса); чужие метки отбрасываются."""
-    return [q for q in qualify if any(_same(q, label) for label in labels)]
+def _criteria_block(criteria: Sequence[Criterion]) -> str:
+    """Список условий с форматом значения: сумма цифрами, территория — официальным названием."""
+    lines: list[str] = []
+    for criterion in criteria:
+        if criterion.kind is CriterionKind.MIN_AMOUNT:
+            hint = "значение — целое число рублей, только цифры (например, «250к» → 250000, «1,5 млн» → 1500000)"
+        else:
+            hint = (
+                "значение — официальное полное название в именительном падеже в том же виде, что в этих "
+                "примерах формата: " + "; ".join(criterion.excluded) + " (примеры показывают только формат, "
+                "не подсказывают ответ). Если клиент назвал город, район или аббревиатуру, запиши "
+                "официальное название территории (субъекта РФ), в которую они входят"
+            )
+        lines.append(criterion.label + " — " + hint)
+    return "\n".join(lines)
 
 
-def _snap(analysis: Analysis, qualify: Sequence[str], state: DialogState) -> Analysis:
-    """missing = критерии корпуса минус известные факты; asked_already — дословные метки критериев."""
-    values = {**state.facts, **analysis.facts}
-    known = [key for key, value in values.items() if str(value).strip()]
-    missing = [q for q in qualify if not any(_same(q, key) for key in known)]
-    asked = _canonical(analysis.asked_already, qualify)
-    return analysis.model_copy(update={"missing": missing, "asked_already": asked})
+def _clip_tail(text: str, limit: int) -> str:
+    """Реплика ассистента: вопрос стоит в конце, поэтому режем начало, а не хвост."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else "…" + flat[-(limit - 1) :].lstrip()
 
 
 class TurnAnalyzer:
@@ -142,7 +161,7 @@ class TurnAnalyzer:
         if data is None:
             return Analysis.fallback(question)
         try:
-            analysis = Analysis.model_validate(data)
+            analysis = Analysis.model_validate(_stringify_facts(data))
         except ValidationError:
             return Analysis.fallback(question)
         if not analysis.question.strip():
@@ -159,8 +178,8 @@ class TurnAnalyzer:
         blocks: list[str] = []
         topic_block = topics.as_prompt_block()
         blocks.append("Темы базы знаний:\n" + (topic_block if topic_block else "(не удалось извлечь)"))
-        qualify_block = topics.qualify_as_prompt_block()
-        blocks.append("Критерии квалификации (по порядку):\n" + (qualify_block if qualify_block else "(нет)"))
+        criteria_block = _criteria_block(topics.qualify)
+        blocks.append("Критерии квалификации (по порядку):\n" + (criteria_block if criteria_block else "(нет)"))
         known = state.as_prompt_block()
         blocks.append("Что известно о клиенте:\n" + (known if known else "(ничего)"))
         asked = state.asked_as_prompt_block()
@@ -176,6 +195,9 @@ class TurnAnalyzer:
         who = {"user": "Клиент", "assistant": "Ассистент"}
         lines: list[str] = []
         for turn in recent:
-            text = " ".join(turn.content.split())[: self._turn_chars]
+            if turn.role == "assistant":
+                text = _clip_tail(turn.content, self._turn_chars)
+            else:
+                text = " ".join(turn.content.split())[: self._turn_chars]
             lines.append(f"{who.get(turn.role, turn.role)}: {text}")
         return "\n".join(lines)

@@ -119,7 +119,9 @@ def _build_service() -> ChatService:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     get_logger().info("Backend стартует")
-    app.state.chat_service = _build_service()
+    service = _build_service()
+    service.warm_up()
+    app.state.chat_service = service
     yield
     get_logger().info("Backend остановлен")
 
