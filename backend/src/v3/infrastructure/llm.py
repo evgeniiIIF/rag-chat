@@ -2,6 +2,9 @@
 
 Модель вызывается через `ChatOpenAI.with_structured_output(AnswerDraft)`, поэтому формат
 ответа задаёт схема, а не разбор строк (`research.md`, R4/R5).
+
+Промпты по этапам: `qualify` — сбор слотов, `consult` — ответ по документу.
+Текст промптов живёт в `core/behavior.py`, здесь — только сборка сообщений.
 """
 
 from __future__ import annotations
@@ -19,9 +22,11 @@ from pydantic import BaseModel, Field
 
 from core.behavior import (
     CONDENSE_SYSTEM_PROMPT,
+    CONSULT_ADDENDUM,
     FRAGMENTS_HEADER,
     HISTORY_TOKEN_BUDGET,
     INTAKE_SYSTEM_PROMPT,
+    QUALIFY_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
 )
 from core.config import Settings
@@ -29,6 +34,8 @@ from domain.models import Chunk
 from domain.profile import ClientProfile
 
 logger = logging.getLogger(__name__)
+
+type Stage = Literal["qualify", "consult"]
 
 CONDENSE_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -38,30 +45,21 @@ CONDENSE_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-PROMPT = ChatPromptTemplate.from_messages(
+QUALIFY_PROMPT = ChatPromptTemplate.from_messages(
     [
-        (
-            "system",
-            "Ты переписываешь последний вопрос клиента в самостоятельный вопрос.\n"
-            "Правила:\n"
-            "1. Подставь детали из предыдущих реплик (какой долг, какое имущество, о чём шла речь).\n"
-            "2. Не отвечай на вопрос и ничего не добавляй от себя.\n"
-            "3. Сохрани смысл и язык клиента.\n"
-            "4. Верни только текст вопроса, без пояснений.",
-        ),
-        MessagesPlaceholder("history", optional=True),
-        ("human", "Последний вопрос: {question}\n\nСамостоятельный вопрос:"),
-    ]
-)
-
-PROMPT = ChatPromptTemplate.from_messages(
-    [
-        ("system", SYSTEM_PROMPT),
+        ("system", QUALIFY_SYSTEM_PROMPT),
         MessagesPlaceholder("history", optional=True),
         ("human", "Вопрос: {question}\n\n" + FRAGMENTS_HEADER + "\n{fragments}"),
     ]
 )
 
+CONSULT_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT + CONSULT_ADDENDUM),
+        MessagesPlaceholder("history", optional=True),
+        ("human", "Вопрос: {question}\n\n" + FRAGMENTS_HEADER + "\n{fragments}"),
+    ]
+)
 
 INTAKE_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -81,6 +79,7 @@ class IntakeDraft(BaseModel):
     debt_amount: int | None = Field(default=None, description="сумма долга в рублях, если названа")
     region: str | None = Field(default=None, description="регион прописки, если назван")
     has_property: bool | None = Field(default=None, description="есть ли квартира, машина, ипотека, залог")
+    wants_consultation: bool = Field(default=False, description="клиент просит юриста/консультацию или согласен")
 
     def profile(self) -> ClientProfile:
         """Слоты разбора → профиль клиента."""
@@ -102,13 +101,19 @@ CondenseFn = Callable[[str, Sequence[BaseMessage]], str]
 type IntakeFn = Callable[[str, Sequence[BaseMessage]], IntakeDraft]
 
 
-def build_messages(question: str, chunks: Sequence[Chunk], history: Sequence[BaseMessage] = ()) -> list[BaseMessage]:
-    """Сообщения модели: инструкция + история диалога (обрезанная) + вопрос с фрагментами."""
+def build_messages(
+    question: str,
+    chunks: Sequence[Chunk],
+    history: Sequence[BaseMessage] = (),
+    stage: Stage = "consult",
+) -> list[BaseMessage]:
+    """Сообщения модели: инструкция этапа + история диалога (обрезанная) + вопрос с фрагментами."""
     fragments = "\n\n".join(
         f"[{chunk.id}] (фрагмент {chunk.paragraph_start}-{chunk.paragraph_end} файла {chunk.source})\n{chunk.text}"
         for chunk in chunks
     )
-    return PROMPT.format_messages(history=trim_history(history), question=question, fragments=fragments)
+    prompt = QUALIFY_PROMPT if stage == "qualify" else CONSULT_PROMPT
+    return prompt.format_messages(history=trim_history(history), question=question, fragments=fragments)
 
 
 def trim_history(history: Sequence[BaseMessage]) -> list[BaseMessage]:
@@ -123,7 +128,7 @@ def trim_history(history: Sequence[BaseMessage]) -> list[BaseMessage]:
     )
 
 
-def build_chat_model(settings: Settings) -> BaseChatModel:
+def build_chat_model(settings: Settings, max_tokens: int | None = None) -> BaseChatModel:
     """Клиент модели провайдера (ключ только из настроек).
 
     Лимит ответа уходит как `max_tokens` через `extra_body`: langchain-openai 1.8 переименовал
@@ -134,7 +139,7 @@ def build_chat_model(settings: Settings) -> BaseChatModel:
         base_url=settings.base_url,
         api_key=settings.api_key,
         temperature=settings.temperature,
-        extra_body={"max_tokens": settings.max_tokens},
+        extra_body={"max_tokens": max_tokens if max_tokens is not None else settings.max_tokens},
     )
 
 
@@ -152,7 +157,12 @@ def build_structured_model(settings: Settings) -> StructuredInvoke:
 
 
 def build_intake(model: BaseChatModel) -> IntakeFn:
-    """Функция разбора реплики (узел intake): модель, но с безопасным фолбэком."""
+    """Функция разбора реплики (узел intake): модель, но с безопасным фолбэком.
+
+    Intake — короткий JSON (≈200 токенов). Если модель reasoning-типа, 800 токенов уходят
+    в reasoning, и structured output падает с LengthFinishReasonError. Поэтому для intake
+    отдельный лимит: max_tokens=400 (хватает на JSON), temperature=0.
+    """
     structured = model.with_structured_output(IntakeDraft)
 
     def intake(question: str, history: Sequence[BaseMessage]) -> IntakeDraft:

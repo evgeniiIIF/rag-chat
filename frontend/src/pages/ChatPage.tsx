@@ -107,7 +107,6 @@ export function ChatPage(): JSX.Element {
             </svg>
           </div>
         </div>
-        {error && <p className="mt-2 text-center text-sm text-rose-500 sm:text-xs">{error.message}</p>}
       </footer>
     </div>
   );

@@ -47,7 +47,7 @@ def create_app(settings: Settings | None = None, *, service: ChatService | None 
                     search=index.search,
                     invoke=build_structured_model(config),
                     condense=build_condense(build_chat_model(config)),
-                    intake=build_intake(build_chat_model(config)),
+                    intake=build_intake(build_chat_model(config, max_tokens=400)),
                 )
                 logger.info("индекс готов: %d фрагментов", len(index.chunks))
         yield

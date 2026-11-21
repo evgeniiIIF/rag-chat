@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage
 from core.behavior import RefusalReason, leaks_internals
 from domain.graph_state import GraphState
 from domain.models import Answer, Chunk, SourceRef, refusal
+from domain.profile import ClientProfile
 from graph.nodes import NodeFn, NodeResult
 from infrastructure.artifacts import write_json
 from infrastructure.llm import AnswerDraft, StructuredInvoke, build_messages
@@ -60,7 +61,11 @@ def make_generate_node(invoke: StructuredInvoke, *, artifacts_dir: Path) -> Node
         request_dir = artifacts_dir / state["request_id"]
         # последняя реплика в state — текущий вопрос, он уходит в промпт отдельным сообщением
         history = state.get("messages", [])[:-1]
-        messages = build_messages(state["question"], chunks, history)
+        # этап: пока идёт сбор слотов — qualify, иначе ответ по документу — consult
+        profile = state.get("profile") or ClientProfile()
+        # qualify — пока собираем слоты; invited/booked — уже консультация
+        stage = "qualify" if profile.stage == "qualify" and not profile.invited else "consult"
+        messages = build_messages(state["question"], chunks, history, stage=stage)
         write_json(
             request_dir / "prompt.json",
             {

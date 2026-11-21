@@ -36,7 +36,7 @@ NODE_REFUSE = "refuse"
 
 
 def route_social(state: GraphState) -> str:
-    """Маршрут со входа: соц-реплика отвечается сразу, деловой вопрос идёт в поиск."""
+    """Маршрут со входа: соц-реплика или агрессия отвечаются сразу, деловой вопрос идёт в разбор."""
     return NODE_CONDENSE if detect(state["question"]) is Intent.QUESTION else NODE_SOCIAL
 
 

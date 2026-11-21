@@ -18,6 +18,7 @@ from core.behavior import (
     GREETING_TOKENS,
     GREETING_WORDS,
     LEADING_FILLERS,
+    RUDE_TOKENS,
     THANKS_PHRASES,
     THANKS_TOKENS,
 )
@@ -31,6 +32,7 @@ class Intent(Enum):
     GREETING = auto()
     THANKS = auto()
     BYE = auto()
+    RUDE = auto()
     QUESTION = auto()
 
 
@@ -44,10 +46,13 @@ def normalize(question: str) -> str:
 
 
 def detect(question: str) -> Intent:
-    """Соц-намерение строго по полному совпадению нормализованной реплики."""
+    """Соц-намерение: агрессия по словам, остальное строго по полному совпадению."""
     phrase = normalize(question)
     if not phrase:
         return Intent.QUESTION
+    tokens = set(phrase.split())
+    if tokens & RUDE_TOKENS:
+        return Intent.RUDE
     if phrase in BYE_TOKENS:
         return Intent.BYE
     if phrase in THANKS_TOKENS or phrase in THANKS_PHRASES:
