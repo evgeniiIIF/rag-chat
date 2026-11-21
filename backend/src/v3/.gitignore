@@ -1,0 +1,9 @@
+# локальные артефакты и индекс v3
+.venv/
+artifacts/
+.chroma/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage

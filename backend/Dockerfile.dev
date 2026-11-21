@@ -1,14 +1,30 @@
+# Dev-стек поднимает v3 (LangGraph RAG, src/v3): свой pyproject и uv.lock внутри каталога.
 FROM python:3.12-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=ghcr.io/astral-sh/uv:0.4.20 /uv /uvx /usr/local/bin/
-COPY pyproject.toml uv.lock* ./
-RUN uv sync --extra dev --frozen || uv sync --extra dev
-COPY src ./src
-COPY tests ./tests
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /uvx /usr/local/bin/
+COPY src/v3/pyproject.toml src/v3/uv.lock ./
+# hatchling собирает пакет `core`, поэтому он нужен до uv sync
+COPY src/v3/core ./core
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    WATCHFILES_FORCE_POLLING=true
+RUN uv sync --frozen --no-dev || uv sync --no-dev
+COPY src/v3/main.py ./
+COPY src/v3/api ./api
+COPY src/v3/core ./core
+COPY src/v3/domain ./domain
+COPY src/v3/graph ./graph
+COPY src/v3/infrastructure ./infrastructure
+COPY src/v3/schemas ./schemas
+COPY src/v3/services ./services
+RUN mkdir -p /app/artifacts /app/.chroma
 EXPOSE 8000
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=10 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)"
+# --reload: исходники монтируются из ./backend/src/v3; артефакты, .venv и индекс не будим
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app", "--reload-exclude", "/app/.venv", "--reload-exclude", "/app/artifacts", "--reload-exclude", "/app/.chroma"]

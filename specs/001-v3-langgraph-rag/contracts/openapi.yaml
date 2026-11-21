@@ -1,0 +1,114 @@
+openapi: 3.1.0
+info:
+  title: Rag Chat v3 API
+  version: 0.1.0
+  description: >
+    Контракт совместим с текущим фронтендом (frontend/src/features/chat).
+    Стриминга нет: один JSON-ответ на запрос.
+paths:
+  /api/chat:
+    post:
+      operationId: chat
+      summary: Ответ по документу
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Ответ или честный отказ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '422':
+          description: Пустой вопрос или превышена длина (валидация pydantic)
+  /api/health:
+    get:
+      operationId: health
+      summary: Состояние сервиса и индекса
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+components:
+  schemas:
+    Turn:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+    ChatRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        history:
+          type: array
+          maxItems: 30
+          items:
+            $ref: '#/components/schemas/Turn'
+          description: Принимается для совместимости, в v3 не используется
+        session_id:
+          type: [string, 'null']
+          maxLength: 64
+          description: Принимается для совместимости, в v3 не используется
+        k:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 10
+    Source:
+      type: object
+      required: [source, paragraph_start, paragraph_end, text]
+      properties:
+        source:
+          type: string
+        paragraph_start:
+          type: integer
+          minimum: 1
+        paragraph_end:
+          type: integer
+          minimum: 1
+        text:
+          type: string
+    ChatResponse:
+      type: object
+      required: [answer, sources, grounded, top_score]
+      properties:
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+        grounded:
+          type: boolean
+          description: false ⇒ честный отказ
+        top_score:
+          type: number
+          minimum: 0
+          maximum: 1
+    HealthResponse:
+      type: object
+      required: [status, index_ready, chunks]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        index_ready:
+          type: boolean
+        chunks:
+          type: integer
+          minimum: 0

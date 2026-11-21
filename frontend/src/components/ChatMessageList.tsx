@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ChatResponse } from "@/features/chat";
 
 export interface ChatMessage {
@@ -10,6 +11,78 @@ export interface ChatMessage {
 export interface ChatMessageListProps {
   messages: ChatMessage[];
   pending?: boolean;
+}
+
+export type MessageBlock = { kind: "p"; text: string } | { kind: "ul"; items: string[] };
+
+const BULLET = /^[-•*]\s+/;
+
+/** Простая разметка ответа: абзацы, списки «- » и **жирный** внутри строки. */
+export function parseBlocks(text: string): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  for (const raw of text.trim().split(/\n{2,}/)) {
+    let paragraph: string[] = [];
+    let items: string[] = [];
+    const flushParagraph = (): void => {
+      if (paragraph.length > 0) blocks.push({ kind: "p", text: paragraph.join(" ") });
+      paragraph = [];
+    };
+    const flushItems = (): void => {
+      if (items.length > 0) blocks.push({ kind: "ul", items });
+      items = [];
+    };
+    for (const line of raw.split("\n").map((value) => value.trim()).filter(Boolean)) {
+      if (BULLET.test(line)) {
+        flushParagraph();
+        items.push(line.replace(BULLET, ""));
+      } else {
+        flushItems();
+        paragraph.push(line);
+      }
+    }
+    flushParagraph();
+    flushItems();
+  }
+  return blocks;
+}
+
+/** **жирный** внутри строки -> <strong>, остальное как есть. */
+export function renderInline(text: string): ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
+    const bold = /^\*\*[^*]+\*\*$/.test(part);
+    const value = bold ? part.slice(2, -2) : part;
+    return bold ? (
+      <strong key={index} className="font-semibold text-slate-900 dark:text-white">
+        {value}
+      </strong>
+    ) : (
+      <span key={index}>{value}</span>
+    );
+  });
+}
+
+function MessageText({ text }: { text: string }): JSX.Element {
+  const blocks = parseBlocks(text);
+  if (blocks.length <= 1 && !text.includes("- ")) {
+    return <p className="whitespace-pre-wrap break-words">{renderInline(text)}</p>;
+  }
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, index) =>
+        block.kind === "ul" ? (
+          <ul key={index} className="list-disc space-y-1 pl-5">
+            {block.items.map((item, itemIndex) => (
+              <li key={itemIndex}>{renderInline(item)}</li>
+            ))}
+          </ul>
+        ) : (
+          <p key={index} className="whitespace-pre-wrap break-words">
+            {renderInline(block.text)}
+          </p>
+        ),
+      )}
+    </div>
+  );
 }
 
 export function ChatMessageList({ messages, pending }: ChatMessageListProps): JSX.Element {
@@ -45,7 +118,9 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
               {m.role === "user" ? "Я" : "AI"}
             </div>
             <div className="min-w-0">
-              <div className="whitespace-pre-wrap break-words">{m.text}</div>
+              <div className="leading-relaxed">
+                <MessageText text={m.text} />
+              </div>
             </div>
           </div>
         </li>

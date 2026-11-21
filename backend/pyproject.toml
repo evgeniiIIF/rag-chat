@@ -45,6 +45,8 @@ ignore = ["B008", "E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.12"
+# кэш вынесен из репозитория: иначе тысячи файлов под fs.watch ломают inotify (ENOSPC)
+cache_dir = "/tmp/mypy-cache/backend"
 strict = true
 disallow_untyped_defs = true
 disallow_untyped_decorators = false
