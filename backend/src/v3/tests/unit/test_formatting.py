@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.formatting import normalize_answer
+from core.formatting import normalize_answer, strip_source_refs
 
 
 def test_inline_bullets_are_split_into_lines() -> None:
@@ -31,3 +31,16 @@ def test_extra_spaces_and_blank_lines_are_collapsed() -> None:
 
 def test_bullet_without_heading() -> None:
     assert normalize_answer("- раз\n- два") == "- раз\n- два"
+
+
+def test_source_refs_are_removed() -> None:
+    assert normalize_answer("По документу, срок — 5 лет.") == "Срок — 5 лет."
+    assert normalize_answer("Согласно источнику [КЦ.docx-0002], сумма от 350 000.") == "Сумма от 350 000."
+    assert normalize_answer("во фрагменте сказано, что берём с 350 000") == "Сказано, что берём с 350 000"
+
+
+def test_plain_answer_keeps_its_text() -> None:
+    text = "Банкротство стоит от 350 000 рублей долга."
+
+    assert strip_source_refs(text) == text
+    assert normalize_answer(text) == text

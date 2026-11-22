@@ -10,9 +10,50 @@ describe("chat zod schemas", () => {
       ],
       grounded: true,
       top_score: 0.9,
+      state: {
+        kind: "question",
+        step: "rag",
+        filters_passed: true,
+        search_query: "срок исковой давности",
+        retrieved: 1,
+        chunks: [
+          {
+            id: "КЦ.docx-0000",
+            source: "КЦ.docx",
+            paragraph_start: 3,
+            paragraph_end: 3,
+            score: 0.72,
+            text: "…",
+          },
+        ],
+        llm: [
+          {
+            purpose: "answer",
+            model: "gpt-4o-mini",
+            stage: "rag",
+            system: "system prompt",
+            history: [{ role: "human", content: "предыдущий вопрос" }],
+            inputs: { вопрос: "…", "состояние фильтров": "фильтры: пройдены" },
+            messages: [
+              { role: "system", content: "…" },
+              { role: "human", content: "…" },
+            ],
+            output: '{"answer":"…"}',
+          },
+        ],
+        profile: {
+          debt_amount: 800000,
+          region: "Москва",
+          phone: null,
+          consultation_time: null,
+          facts: {},
+        },
+      },
     });
     expect(parsed.grounded).toBe(true);
     expect(parsed.sources[0]?.paragraph_start).toBe(3);
+    expect(parsed.state.filters_passed).toBe(true);
+    expect(parsed.state.llm[0]?.purpose).toBe("answer");
   });
 
   it("rejects out-of-range top_score", () => {
@@ -22,6 +63,22 @@ describe("chat zod schemas", () => {
         sources: [],
         grounded: false,
         top_score: 1.5,
+        state: {
+          kind: "question",
+          step: "rag",
+          filters_passed: true,
+          search_query: "срок исковой давности",
+          retrieved: 1,
+          chunks: [],
+          llm: [],
+          profile: {
+            debt_amount: 800000,
+            region: "Москва",
+            phone: null,
+            consultation_time: null,
+            facts: {},
+          },
+        },
       }),
     ).toThrow();
   });

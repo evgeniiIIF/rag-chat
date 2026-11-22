@@ -5,7 +5,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from schemas.chat import ChatRequest, ChatResponse, SourceSchema, Turn
+from schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    ProfileSchema,
+    SourceSchema,
+    StateSchema,
+    Turn,
+)
 
 
 def test_request_defaults() -> None:
@@ -45,8 +52,9 @@ def test_request_limits_history() -> None:
 def test_response_bounds_top_score() -> None:
     source = SourceSchema(source="doc.docx", paragraph_start=1, paragraph_end=2, text="фрагмент")
 
-    response = ChatResponse(answer="ответ", sources=[source], grounded=True, top_score=0.5)
+    state = StateSchema(filters_passed=False, retrieved=0, profile=ProfileSchema())
+    response = ChatResponse(answer="ответ", sources=[source], grounded=True, top_score=0.5, state=state)
 
     assert response.sources[0].paragraph_end == 2
     with pytest.raises(ValidationError):
-        ChatResponse(answer="ответ", sources=[], grounded=False, top_score=1.5)
+        ChatResponse(answer="ответ", sources=[], grounded=False, top_score=1.5, state=state)

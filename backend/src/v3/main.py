@@ -13,10 +13,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from api import chat as chat_api
+from api import graph as graph_api
 from api import health as health_api
 from core.config import Settings, get_settings
 from core.logging import configure_logging
-from infrastructure.llm import build_chat_model, build_condense, build_intake, build_structured_model
+from infrastructure.llm import build_answer_fn, build_chat_model, build_condense, build_intake
 from services.chat_service import ChatService
 from services.index_service import IndexService
 
@@ -44,10 +45,9 @@ def create_app(settings: Settings | None = None, *, service: ChatService | None 
             else:
                 app.state.chat_service = ChatService(
                     config,
-                    model=build_chat_model(config),
                     search=index.search,
-                    invoke=build_structured_model(config),
-                    condense=build_condense(build_chat_model(config)),
+                    answer_fn=build_answer_fn(build_chat_model(config)),
+                    condense=build_condense(build_chat_model(config, max_tokens=200)),
                     intake=build_intake(build_chat_model(config, max_tokens=2000)),
                 )
                 logger.info("индекс готов: %d фрагментов", len(index.chunks))
@@ -56,6 +56,7 @@ def create_app(settings: Settings | None = None, *, service: ChatService | None 
 
     application = FastAPI(title="ragchat v3", version="3.0.0", lifespan=lifespan)
     application.include_router(chat_api.router, prefix=API_PREFIX)
+    application.include_router(graph_api.router, prefix=API_PREFIX)
     application.include_router(health_api.router, prefix=API_PREFIX)
     return application
 

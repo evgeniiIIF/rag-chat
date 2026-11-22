@@ -1,4 +1,4 @@
-"""Узлы графа v3: retrieve → grade → generate."""
+"""Узлы графа: greet → extract → (retrieve) → answer."""
 
 from __future__ import annotations
 

@@ -39,10 +39,65 @@ class ChatRequest(BaseModel):
     k: int | None = Field(default=None, ge=1, le=10)
 
 
+class ProfileSchema(BaseModel):
+    """Профиль клиента из стейта графа: по нему считаются фильтры и шаг."""
+
+    debt_amount: int | None = None
+    region: str | None = None
+    phone: str | None = None
+    consultation_time: str | None = None
+    facts: dict[str, str] = Field(default_factory=dict)
+
+
+class ChunkSchema(BaseModel):
+    """Фрагмент, поданный модели: адрес в документе, текст и скор поиска."""
+
+    id: str
+    source: str
+    paragraph_start: int
+    paragraph_end: int
+    score: float
+    text: str
+
+
+class LlmMessageSchema(BaseModel):
+    """Сообщение запроса к модели: роль и полный текст."""
+
+    role: str
+    content: str
+
+
+class LlmCallSchema(BaseModel):
+    """Один вызов модели, разложенный по частям: промпт, история, вход, отправка, ответ."""
+
+    purpose: str
+    model: str
+    stage: str | None = None
+    system: str | None = None
+    history: list[LlmMessageSchema] = Field(default_factory=list)
+    inputs: dict[str, str] = Field(default_factory=dict)
+    messages: list[LlmMessageSchema]
+    output: str | None = None
+
+
+class StateSchema(BaseModel):
+    """Стейт, на котором построен ответ: фронтенд пишет его в консоль браузера."""
+
+    kind: str | None = None
+    step: str | None = None
+    filters_passed: bool
+    search_query: str | None = None
+    retrieved: int = Field(ge=0)
+    chunks: list[ChunkSchema] = Field(default_factory=list)
+    profile: ProfileSchema
+    llm: list[LlmCallSchema] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
-    """Ответ чата: текст, источники, признак опоры на документ, лучший скор."""
+    """Ответ чата: текст, источники, признак опоры на документ, лучший скор и стейт."""
 
     answer: str
     sources: list[SourceSchema]
     grounded: bool
     top_score: float = Field(ge=0.0, le=1.0)
+    state: StateSchema

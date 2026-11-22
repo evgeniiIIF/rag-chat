@@ -1,145 +1,136 @@
-"""Профиль клиента и правила квалификации (КЦ ¶60).
+"""Профиль клиента и правила фильтров.
 
-Только данные и чистые функции. Решения о переходах — в route (graph/build.py),
-формулировки — в respond (LLM). Здесь нет текстов ответов и нет if/elif по сценарию.
+Только данные и чистые функции: решения о шаге — в `domain/scenario.py`, формулировки — в модели.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from core.behavior import (
-    FILTER_Q_DEBT,
-    FILTER_Q_DEBT_RECHECK,
-    FILTER_Q_DEBT_SMALL,
-    FILTER_Q_REGION,
-    FILTER_Q_REGION_BAD,
-)
-
 MIN_DEBT_RUB: int = 350_000
+# больше 100 млн — не долг физлица, а склейка цифр или ошибка разбора
+MAX_DEBT_RUB: int = 100_000_000
+REGION_MAX_LENGTH: int = 64
 
-# Исключённые регионы (КЦ ¶60). Код-правило, не факт для клиента.
-DEFAULT_EXCLUDED_REGIONS: tuple[str, ...] = (
-    "чечня",
-    "чеченская",
-    "днр",
-    "лнр",
-    "владимирская",
+# регионы, с которыми компания не работает (КЦ ¶60)
+EXCLUDED_REGIONS: tuple[str, ...] = ("чечня", "чеченская", "днр", "лнр", "владимирская")
+
+_REGION_OK = re.compile(r"^[а-яё][а-яё\s\-.]*$", re.IGNORECASE)
+_PHONE = re.compile(
+    r"(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}"
+    r"|\d{10,11}"
+    r"|\d{2}[\s\-]\d{2}[\s\-]\d{2,4}(?:[\s\-]\d{2,4})?"
 )
-
 _CLOCK = re.compile(r"\b(\d{1,2})[:.](\d{2})\b")
 _HOUR = re.compile(r"\b(\d{1,2})\s*(?:час|часа|часов)\b", re.IGNORECASE)
 _DAY = re.compile(r"\b(сегодня|завтра|послезавтра|сейчас|утром|днём|днем|вечером)\b", re.IGNORECASE)
 
 
 class ClientProfile(BaseModel):
-    """Что известно о клиенте и где он в воронке.
+    """Слоты разговора. Любое поле можно изменить на любом шаге.
 
-    Пять слотов для записи: debt_amount, region, phone, consultation_time, ready_to_wait.
-    `facts` — контекст из КЦ-0001 (долги, имущество, сделки), не блокер записи.
+    debt_amount и region — обязательные фильтры; phone и consultation_time нужны для записи.
+    facts — контекст клиента из реплик (какие долги, имущество), фильтры не затрагивает.
     """
 
     debt_amount: int | None = None
     region: str | None = None
     phone: str | None = None
     consultation_time: str | None = None
-    ready_to_wait: bool = False
-    invited: bool = False
-    stage: Literal["collect", "invited", "booked"] = "collect"
-    user_is_angry: bool = False
-    wants_consultation: bool = False
-    disqualified: bool = False
     facts: dict[str, str] = Field(default_factory=dict)
 
-    def is_booked(self) -> bool:
-        """Запись возможна: есть регион, телефон, время и готовность ждать.
+    def missing_filter(self) -> str | None:
+        """Какого обязательного слота не хватает: debt | region | None."""
+        if self.debt_amount is None:
+            return "debt"
+        if self.region is None:
+            return "region"
+        return None
 
-        Сумма долга здесь НЕ проверяется: квалификация по debt — отдельно в route (до invite).
-        После not_debt (МФЦ-путь) сумма может быть < 350k — это допустимо.
+    def failed_filter(self) -> str | None:
+        """Какой известный фильтр уже не проходит: debt | region | None.
+
+        Проверяется раньше нехватки данных: если сумма меньше 350к, спрашивать регион уже незачем.
         """
-        return (
-            not self.disqualified
-            and self.region is not None
-            and not is_excluded_region(self.region)
-            and self.phone is not None
-            and self.consultation_time is not None
-            and self.ready_to_wait
-        )
+        if self.debt_amount is not None and not qualifies_by_debt(self.debt_amount):
+            return "debt"
+        if self.region is not None and is_excluded_region(self.region):
+            return "region"
+        return None
 
-    def merge(self, fresh: ClientProfile) -> ClientProfile:
-        """Свежий разбор поверх известного; слоты не теряются."""
-        return self.model_copy(
-            update={
-                "debt_amount": fresh.debt_amount if fresh.debt_amount is not None else self.debt_amount,
-                "region": fresh.region if fresh.region is not None else self.region,
-                "phone": fresh.phone if fresh.phone is not None else self.phone,
-                "consultation_time": (
-                    fresh.consultation_time if fresh.consultation_time is not None else self.consultation_time
-                ),
-                "ready_to_wait": fresh.ready_to_wait or self.ready_to_wait,
-                "invited": fresh.invited or self.invited,
-                "stage": fresh.stage if fresh.stage != "collect" else self.stage,
-                "user_is_angry": fresh.user_is_angry or self.user_is_angry,
-                "wants_consultation": fresh.wants_consultation or self.wants_consultation,
-                "disqualified": fresh.disqualified or self.disqualified,
-                "facts": {**self.facts, **fresh.facts},
-            }
-        )
-
-    def with_invite(self) -> ClientProfile:
-        return self.model_copy(update={"invited": True, "stage": "invited"})
-
-    def with_debt(self, debt: int | None) -> ClientProfile:
-        if not debt:
-            return self
-        return self.model_copy(update={"debt_amount": debt})
-
-    def with_phone(self, phone: str | None) -> ClientProfile:
-        if not phone:
-            return self
-        return self.model_copy(update={"phone": phone})
-
-    def with_time(self, time: str | None) -> ClientProfile:
-        if not time:
-            return self
-        return self.model_copy(update={"consultation_time": time})
-
-    def with_ready(self) -> ClientProfile:
-        # stage=booked ставит только route при is_booked(); готовность — отдельный слот
-        return self.model_copy(update={"ready_to_wait": True})
-
-    def with_anger(self) -> ClientProfile:
-        return self.model_copy(update={"user_is_angry": True})
-
-
-def is_excluded_region(region: str) -> bool:
-    """Регион в списке исключённых (КЦ ¶60)."""
-    low = region.casefold()
-    return any(word in low for word in DEFAULT_EXCLUDED_REGIONS if word)
+    def filters_ok(self) -> bool:
+        """Сумма от 350к и регион не в списке исключённых."""
+        return qualifies_by_debt(self.debt_amount) and self.region is not None and not is_excluded_region(self.region)
 
 
 def qualifies_by_debt(debt: int | None) -> bool:
     return debt is not None and debt >= MIN_DEBT_RUB
 
 
-def filter_question(profile: ClientProfile) -> str | None:
-    # вопрос, закрывающий ближайший непройденный фильтр; None — фильтры пройдены
+def is_excluded_region(region: str) -> bool:
+    low = region.casefold()
+    return any(word in low for word in EXCLUDED_REGIONS)
+
+
+def clean_debt(value: int | None) -> int | None:
+    """Сумма в разумных пределах: 0 < сумма ≤ 100 млн, иначе мусор разбора."""
+    if value is None or value <= 0 or value > MAX_DEBT_RUB:
+        return None
+    return value
+
+
+def clean_region(value: str | None) -> str | None:
+    """Регион — только кириллица: латиница и цифры это мусор разбора («RUB»)."""
+    if not value:
+        return None
+    flat = " ".join(value.split()).strip(" .,;:")
+    if len(flat) < 3 or len(flat) > REGION_MAX_LENGTH or not _REGION_OK.match(flat):
+        return None
+    return flat
+
+
+def filter_state_text(profile: ClientProfile) -> str:
+    """Состояние фильтров для промпта."""
     if profile.debt_amount is None:
-        return FILTER_Q_DEBT
-    if not qualifies_by_debt(profile.debt_amount):
-        return FILTER_Q_DEBT_RECHECK if "debt_checked" in profile.facts else FILTER_Q_DEBT_SMALL
+        debt = "не указан"
+    elif qualifies_by_debt(profile.debt_amount):
+        debt = f"{profile.debt_amount} ₽ (подходит)"
+    else:
+        debt = f"{profile.debt_amount} ₽ (меньше 350 000 ₽)"
     if profile.region is None:
-        return FILTER_Q_REGION
-    if is_excluded_region(profile.region):
-        return FILTER_Q_REGION_BAD
-    return None
+        region = "не указан"
+    elif is_excluded_region(profile.region):
+        region = f"{profile.region} (не обслуживается)"
+    else:
+        region = f"{profile.region} (подходит)"
+    return f"долг: {debt}; регион: {region}; фильтры: {'пройдены' if profile.filters_ok() else 'не пройдены'}"
+
+
+def profile_text(profile: ClientProfile) -> str:
+    """Что известно о клиенте, для промпта."""
+    parts: list[str] = []
+    if profile.debt_amount is not None:
+        parts.append(f"сумма долга: {profile.debt_amount} ₽")
+    if profile.region:
+        parts.append(f"регион: {profile.region}")
+    if profile.phone:
+        parts.append(f"телефон: {profile.phone}")
+    if profile.consultation_time:
+        parts.append(f"удобное время: {profile.consultation_time}")
+    if profile.facts:
+        parts.append("; ".join(f"{key}: {value}" for key, value in profile.facts.items()))
+    return "; ".join(parts) if parts else "(пока ничего)"
+
+
+def extract_phone(text: str) -> str | None:
+    match = _PHONE.search(text)
+    return match.group(0).strip() if match else None
 
 
 def extract_time(text: str) -> str | None:
-    """Regex-fallback для узла extract: «14:39», «сегодня в 15», «завтра»."""
+    """Fallback разбора времени: «14:39», «в 15 часов», «завтра вечером»."""
     clock = _CLOCK.search(text)
     if clock:
         return f"{clock.group(1)}:{clock.group(2)}"

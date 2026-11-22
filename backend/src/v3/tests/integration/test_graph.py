@@ -1,270 +1,170 @@
-"""Интеграционные тесты графа: маршрут отказа и маршрут генерации."""
+"""Интеграционные тесты графа: приветствие, сбор фильтров, справка и ответ по фрагментам."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from core.behavior import (
-    ASK_DEBT,
-    ASK_REGION,
-    GREETING_FIRST,
-    GREETING_REPEAT,
-    INVITE,
-    NOT_OUR_CASE_DEBT,
-    REFUSAL_TEXTS,
-)
+from domain.graph_state import GraphState
 from domain.models import Chunk, RetrievedChunk
-from graph.build import build_graph, route_after_grade
-from infrastructure.artifacts import read_json
-from infrastructure.llm import AnswerDraft, IntakeDraft
+from domain.profile import ClientProfile
+from domain.scenario import STEP_QUERIES
+from graph.build import build_graph
+from infrastructure.llm import IntakeDraft, Prompt
 
 
-def make_chunk(order: int = 0) -> Chunk:
+def make_chunk() -> Chunk:
     return Chunk(
-        id=f"doc.docx-{order:04d}",
+        id="doc.docx-0000",
         source="doc.docx",
-        order=order,
-        paragraph_start=order + 1,
-        paragraph_end=order + 1,
-        text="Берём в процедуру только с суммой от 350 000 рублей.",
+        order=0,
+        paragraph_start=1,
+        paragraph_end=1,
+        text="В процедуру берут с суммой от 350 000 рублей.",
     )
 
 
-def make_hit(score: float) -> RetrievedChunk:
+def make_hit(score: float = 0.9) -> RetrievedChunk:
     return RetrievedChunk(chunk=make_chunk(), score=score, rank=1)
 
 
-class FakeInvoke:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def __call__(self, messages: list[Any]) -> AnswerDraft:
-        self.calls += 1
-        return AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"])
-
-
-def test_route_after_grade() -> None:
-    refused = {"request_id": "r", "question": "q", "k": 3, "refused": True}
-    grounded = {"request_id": "r", "question": "q", "k": 3, "refused": False}
-
-    assert route_after_grade(refused) == "refuse"
-    assert route_after_grade(grounded) == "generate"
-
-
-def test_graph_refuses_below_threshold(tmp_path: Path) -> None:
-    invoke = FakeInvoke()
-    graph = build_graph(
-        search=lambda question, k: [make_hit(0.1)],
-        threshold=0.35,
-        invoke=invoke,
-        artifacts_dir=tmp_path,
-    )
-
-    result = graph.invoke({"request_id": "req-refuse", "question": "Что с гипопотамами?", "k": 3})
-
-    assert result["refused"] is True
-    assert result["top_score"] == 0.1
-    assert result["answer"].answer == REFUSAL_TEXTS["below_threshold"]
-    assert result["answer"].grounded is False
-    assert [message.content for message in result["messages"]] == [REFUSAL_TEXTS["below_threshold"]]
-    assert invoke.calls == 0
-    assert not (tmp_path / "req-refuse" / "prompt.json").exists()
-
-
-def test_graph_generates_when_grounding_exists(tmp_path: Path) -> None:
-    invoke = FakeInvoke()
-    graph = build_graph(
-        search=lambda question, k: [make_hit(0.9)],
-        threshold=0.35,
-        invoke=invoke,
-        artifacts_dir=tmp_path,
-    )
-
-    result = graph.invoke({"request_id": "req-ok", "question": "С какой суммой берут?", "k": 3})
-
-    assert result["refused"] is False
-    answer = result["answer"]
-    assert answer.grounded is True
-    assert answer.sources[0].text.startswith("Берём")
-    assert invoke.calls == 1
-    assert read_json(tmp_path / "req-ok" / "prompt.json")["question"] == "С какой суммой берут?"
-    assert [message.content for message in result["messages"]] == [answer.answer]
-
-
-def test_checkpointer_keeps_dialog_history_per_thread(tmp_path: Path) -> None:
-    """Один thread_id — история копится; другой thread_id её не видит."""
-    graph = build_graph(
-        search=lambda question, k: [make_hit(0.9)],
-        threshold=0.35,
-        invoke=FakeInvoke(),
-        artifacts_dir=tmp_path,
-        checkpointer=InMemorySaver(),
-    )
-    config = {"configurable": {"thread_id": "client-1"}}
-
-    graph.invoke(
-        {"request_id": "r1", "question": "Вопрос 1", "k": 3, "messages": [HumanMessage(content="Вопрос 1")]},
-        config=config,
-    )
-    second = graph.invoke(
-        {"request_id": "r2", "question": "Вопрос 2", "k": 3, "messages": [HumanMessage(content="Вопрос 2")]},
-        config=config,
-    )
-    other = graph.invoke(
-        {"request_id": "r3", "question": "Вопрос 3", "k": 3, "messages": [HumanMessage(content="Вопрос 3")]},
-        config={"configurable": {"thread_id": "client-2"}},
-    )
-
-    assert [message.content for message in second["messages"]][:2] == ["Вопрос 1", "От 350 000 рублей."]
-    assert [message.content for message in other["messages"]][0] == "Вопрос 3"  # noqa: RUF015
-
-
-def test_follow_up_is_rewritten_before_search(tmp_path: Path) -> None:
-    """Follow-up ищется по переписанному вопросу, ответ по-прежнему строится по фрагментам."""
-    queries: list[str] = []
-
-    def search(question: str, k: int) -> list[RetrievedChunk]:
-        queries.append(question)
-        return [make_hit(0.9)]
-
-    graph = build_graph(
-        search=search,
-        threshold=0.35,
-        invoke=FakeInvoke(),
-        artifacts_dir=tmp_path,
-        condense=lambda question, history: "какой суммой долга берут в процедуру?",
-        checkpointer=InMemorySaver(),
-    )
-    config = {"configurable": {"thread_id": "client-1"}}
-    first = {"request_id": "r1", "question": "берут с какой суммой?", "k": 3}
-    second = {"request_id": "r2", "question": "а подробнее?", "k": 3}
-
-    graph.invoke({**first, "messages": [HumanMessage(content="берут с какой суммой?")]}, config=config)
-    graph.invoke({**second, "messages": [HumanMessage(content="а подробнее?")]}, config=config)
-
-    assert queries == ["берут с какой суммой?", "какой суммой долга берут в процедуру?"]
-
-
-def test_greeting_answers_without_search_and_model(tmp_path: Path) -> None:
-    """Соц-ветка: готовый текст, поиск и модель не вызываются."""
-    calls: list[str] = []
-    invoke = FakeInvoke()
-    graph = build_graph(
-        search=lambda question, k: calls.append(question) or [make_hit(0.9)],
-        threshold=0.35,
-        invoke=invoke,
-        artifacts_dir=tmp_path,
-        checkpointer=InMemorySaver(),
-    )
-    config = {"configurable": {"thread_id": "client-1"}}
-
-    first = graph.invoke(
-        {"request_id": "r1", "question": "Здравствуйте!", "k": 3, "messages": [HumanMessage(content="Здравствуйте!")]},
-        config=config,
-    )
-    second = graph.invoke(
-        {"request_id": "r2", "question": "привет", "k": 3, "messages": [HumanMessage(content="привет")]},
-        config=config,
-    )
-
-    assert first["answer"].answer == GREETING_FIRST
-    assert second["answer"].answer == GREETING_REPEAT
-    assert first["top_score"] == 0.0
-    assert calls == []
-    assert invoke.calls == 0
-
-
 class FakeIntake:
-    """Разбор реплики по расписанию: что «сказал» клиент в этом ходе."""
+    def __init__(self, drafts: dict[str, IntakeDraft]) -> None:
+        self.drafts = drafts
 
-    def __init__(self, draft: IntakeDraft) -> None:
-        self.draft = draft
-        self.calls = 0
-
-    def __call__(self, question: str, history: list[Any]) -> IntakeDraft:
-        self.calls += 1
-        return self.draft
+    def __call__(self, question: str, history: Sequence[BaseMessage]) -> IntakeDraft:
+        return self.drafts.get(question, IntakeDraft(kind="situation"))
 
 
-def build_scenario_graph(tmp_path: Path, draft: IntakeDraft) -> tuple[Any, FakeIntake, FakeInvoke, list[str]]:
-    intake = FakeIntake(draft)
-    invoke = FakeInvoke()
-    calls: list[str] = []
-    graph = build_graph(
-        search=lambda question, k: calls.append(question) or [make_hit(0.9)],
+class FakeAnswer:
+    def __init__(self) -> None:
+        self.prompts: list[Prompt] = []
+
+    def __call__(self, prompt: Prompt) -> str:
+        self.prompts.append(prompt)
+        return f"ответ:{prompt.stage}"
+
+
+def make_graph(tmp_path: Path, intake: FakeIntake, answer: FakeAnswer, *, score: float = 0.9) -> Any:
+    def search(question: str, k: int) -> list[RetrievedChunk]:
+        return [make_hit(score)]
+
+    return build_graph(
+        search=search,
+        answer_fn=answer,
         threshold=0.35,
-        invoke=invoke,
-        artifacts_dir=tmp_path,
+        artifacts_dir=tmp_path / "artifacts",
         intake=intake,
-        min_debt_rub=350_000,
-        excluded_regions=("владимирская",),
         checkpointer=InMemorySaver(),
     )
-    return graph, intake, invoke, calls
 
 
-def test_vague_question_goes_to_scenario_not_to_document(tmp_path: Path) -> None:
-    graph, _, invoke, calls = build_scenario_graph(tmp_path, IntakeDraft(kind="situation"))
-
-    result = graph.invoke(
-        {"request_id": "r1", "question": "что знаешь вообще", "k": 3, "messages": [HumanMessage("что знаешь вообще")]},
-        config={"configurable": {"thread_id": "t1"}},
+def run(graph: Any, question: str, profile: ClientProfile | None = None) -> dict[str, Any]:
+    # сервис всегда кладёт реплику клиента в историю перед вызовом графа
+    state = GraphState(
+        request_id="r1",
+        question=question,
+        messages=[HumanMessage(content=question)],
+        profile=profile or ClientProfile(),
     )
-
-    assert result["answer"].answer == ASK_DEBT
-    assert result["top_score"] == 0.0
-    assert calls == []
-    assert invoke.calls == 0
+    return graph.invoke(state, config={"configurable": {"thread_id": "t1"}})
 
 
-def test_scenario_advances_between_turns(tmp_path: Path) -> None:
-    graph, _, _, _ = build_scenario_graph(tmp_path, IntakeDraft(kind="situation", debt_amount=500_000))
+def test_greeting_ends_the_turn(tmp_path: Path) -> None:
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, FakeIntake({}), answer)
 
-    result = graph.invoke(
-        {"request_id": "r2", "question": "долг 500 тысяч", "k": 3, "messages": [HumanMessage("долг 500 тысяч")]},
-        config={"configurable": {"thread_id": "t2"}},
-    )
+    result = run(graph, "привет")
 
-    assert result["answer"].answer == ASK_REGION
-
-
-def test_small_debt_is_refused_by_scenario(tmp_path: Path) -> None:
-    graph, _, invoke, calls = build_scenario_graph(tmp_path, IntakeDraft(kind="situation", debt_amount=150_000))
-
-    result = graph.invoke(
-        {"request_id": "r3", "question": "долг 150 тысяч", "k": 3, "messages": [HumanMessage("долг 150 тысяч")]},
-        config={"configurable": {"thread_id": "t3"}},
-    )
-
-    assert result["answer"].answer == NOT_OUR_CASE_DEBT
-    assert calls == []
-    assert invoke.calls == 0
+    assert result["step"] == "greeting"
+    assert result["answer"].startswith("Привет!")
+    assert answer.prompts == []
 
 
-def test_qualified_client_is_invited_to_consultation(tmp_path: Path) -> None:
-    draft = IntakeDraft(kind="situation", debt_amount=800_000, region="Москва", has_property=False)
-    graph, _, _, _ = build_scenario_graph(tmp_path, draft)
+def test_graph_asks_debt_then_region(tmp_path: Path) -> None:
+    intake = FakeIntake({"долг 800 тысяч": IntakeDraft(kind="situation", debt_amount=800_000)})
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, intake, answer)
 
-    result = graph.invoke(
-        {"request_id": "r4", "question": "долг 800 тысяч, Москва, имущества нет", "k": 3, "messages": []},
-        config={"configurable": {"thread_id": "t4"}},
-    )
+    result = run(graph, "долг 800 тысяч")
 
-    assert result["answer"].answer == INVITE
+    assert result["step"] == "ask_region"
+    assert result["profile"].debt_amount == 800_000
+    # контекст приходит на любом шаге, но запрос свой: «долг 800 тысяч» — плохой поисковый запрос
+    assert result["search_query"] == STEP_QUERIES["ask_region"]
+    assert result["retrieved"] != []
+    assert result["grounded"] is False
 
 
-def test_specific_question_still_uses_document(tmp_path: Path) -> None:
-    graph, _, invoke, calls = build_scenario_graph(tmp_path, IntakeDraft(kind="question"))
+def test_passed_filters_invite_without_context(tmp_path: Path) -> None:
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, FakeIntake({}), answer)
+    profile = ClientProfile(debt_amount=800_000, region="Москва")
 
-    result = graph.invoke(
-        {"request_id": "r5", "question": "С какой суммой берут?", "k": 3, "messages": []},
-        config={"configurable": {"thread_id": "t5"}},
-    )
+    result = run(graph, "запишите меня", profile)
 
-    assert result["answer"].answer == "От 350 000 рублей."
-    assert invoke.calls == 1
-    assert calls == ["С какой суммой берут?"]
+    assert result["step"] == "invite"
+    assert result["retrieved"] != []
+    assert result["grounded"] is False
+    assert "В конце задай один вопрос" not in answer.prompts[0].system
+
+
+def test_question_retrieves_fragments(tmp_path: Path) -> None:
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, FakeIntake({"с какой суммой?": IntakeDraft(kind="question")}), answer)
+    profile = ClientProfile(debt_amount=800_000, region="Москва")
+
+    result = run(graph, "с какой суммой?", profile)
+
+    assert result["step"] == "rag"
+    assert result["grounded"] is True
+    assert result["search_query"] == "с какой суммой?"
+    assert "от 350 000 рублей" in answer.prompts[0].inputs["фрагменты"]
+
+
+def test_one_failed_filter_skips_the_next_question(tmp_path: Path) -> None:
+    intake = FakeIntake({"долг 310 тысяч": IntakeDraft(kind="situation", debt_amount=310_000)})
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, intake, answer)
+
+    result = run(graph, "долг 310 тысяч")
+
+    assert result["step"] == "info"
+    assert result["profile"].region is None
+    assert "не предлагай консультацию" in answer.prompts[0].system.lower()
+
+
+def test_info_step_keeps_filter_question(tmp_path: Path) -> None:
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, FakeIntake({}), answer)
+    profile = ClientProfile(debt_amount=200_000, region="Москва")
+
+    result = run(graph, "и что теперь?", profile)
+
+    assert result["step"] == "info"
+    assert result["search_query"] == STEP_QUERIES["info"]
+    assert "не предлагай консультацию" in answer.prompts[0].system.lower()
+
+
+def test_booked_step_confirms(tmp_path: Path) -> None:
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, FakeIntake({}), answer)
+    profile = ClientProfile(debt_amount=800_000, region="Москва", phone="+79991234567", consultation_time="завтра")
+
+    result = run(graph, "спасибо", profile)
+
+    assert result["step"] == "booked"
+    assert result["answer"].lower() == "ответ:booked"
+
+
+def test_messages_are_appended_to_history(tmp_path: Path) -> None:
+    answer = FakeAnswer()
+    graph = make_graph(tmp_path, FakeIntake({}), answer)
+
+    result = run(graph, "привет")
+
+    assert [message.type for message in result["messages"]] == ["human", "ai"]

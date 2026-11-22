@@ -1,17 +1,19 @@
-"""Тесты сценария чата: граф целиком, артефакты запроса, отказ без вызова модели."""
+"""Тесты сценария чата: граф целиком, шаги, артефакты и трейс модели."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from langchain_core.messages import BaseMessage
 from pydantic import SecretStr
 
 from core.config import Settings
 from domain.models import Chunk, RetrievedChunk
 from infrastructure.artifacts import read_json
-from infrastructure.llm import AnswerDraft
-from schemas.chat import ChatRequest, Turn
+from infrastructure.llm import IntakeDraft
+from schemas.chat import ChatRequest
 from services.chat_service import ChatService
 
 
@@ -31,118 +33,107 @@ def make_chunk(order: int = 0) -> Chunk:
         order=order,
         paragraph_start=order + 1,
         paragraph_end=order + 1,
-        text="Берём в процедуру только с суммой от 350 000 рублей.",
+        text="В процедуру берут с суммой от 350 000 рублей.",
     )
 
 
-def make_hit(score: float) -> RetrievedChunk:
-    return RetrievedChunk(chunk=make_chunk(), score=score, rank=1)
+class FakeIntake:
+    """Разбор реплики по тексту: что «понял» — то и вернём."""
+
+    def __init__(self) -> None:
+        self.answers: dict[str, IntakeDraft] = {}
+
+    def __call__(self, question: str, history: Sequence[BaseMessage]) -> IntakeDraft:
+        return self.answers.get(question, IntakeDraft(kind="situation"))
 
 
-class FakeInvoke:
-    def __init__(self, draft: AnswerDraft) -> None:
-        self.draft = draft
-        self.calls = 0
+class FakeAnswer:
+    def __init__(self) -> None:
+        self.stages: list[str] = []
+        self.prompts: list[Any] = []
 
-    def __call__(self, messages: list[Any]) -> AnswerDraft:
-        self.calls += 1
-        return self.draft
-
-
-def test_ask_returns_grounded_answer_with_sources(tmp_path: Path) -> None:
-    invoke = FakeInvoke(AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"]))
-    settings = make_settings(tmp_path)
-    service = ChatService(settings, search=lambda question, k: [make_hit(0.9)], invoke=invoke)
-
-    response = service.ask(ChatRequest(question="С какой суммой берут?"))
-
-    assert response.grounded is True
-    assert response.answer == "От 350 000 рублей."
-    assert response.top_score == 0.9
-    assert response.sources[0].source == "doc.docx"
-    assert invoke.calls == 1
-    request_dirs = list(settings.artifacts_dir.iterdir())
-    assert len(request_dirs) == 1
-    assert read_json(request_dirs[0] / "retrieved.json")[0]["score"] == 0.9
+    def __call__(self, prompt: Any) -> str:
+        self.stages.append(prompt.stage)
+        self.prompts.append(prompt)
+        return f"ответ:{prompt.stage}"
 
 
-def test_ask_refuses_without_calling_model(tmp_path: Path) -> None:
-    invoke = FakeInvoke(AnswerDraft(answer="не должен вызваться", grounded=True, used_chunk_ids=[]))
-    settings = make_settings(tmp_path)
-    service = ChatService(settings, search=lambda question, k: [make_hit(0.1)], invoke=invoke)
-
-    response = service.ask(ChatRequest(question="Что с гипопотамами?"))
-
-    assert response.grounded is False
-    assert response.sources == []
-    assert response.top_score == 0.1
-    assert invoke.calls == 0
-    request_dirs = list(settings.artifacts_dir.iterdir())
-    assert not (request_dirs[0] / "prompt.json").exists()
-
-
-def test_ask_uses_request_k(tmp_path: Path) -> None:
-    seen: list[int] = []
+def make_service(tmp_path: Path, *, score: float = 0.9) -> tuple[ChatService, FakeIntake, FakeAnswer]:
+    intake = FakeIntake()
+    answer = FakeAnswer()
 
     def search(question: str, k: int) -> list[RetrievedChunk]:
-        seen.append(k)
-        return [make_hit(0.9)]
+        return [RetrievedChunk(chunk=make_chunk(), score=score, rank=1)]
 
-    invoke = FakeInvoke(AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"]))
-    service = ChatService(make_settings(tmp_path), search=search, invoke=invoke)
+    service = ChatService(
+        make_settings(tmp_path),
+        search=search,
+        answer_fn=answer,
+        intake=intake,
+    )
+    return service, intake, answer
 
-    service.ask(ChatRequest(question="вопрос", k=7))
 
-    assert seen == [7]
+def test_greeting_answers_without_model(tmp_path: Path) -> None:
+    service, _, answer = make_service(tmp_path)
+
+    response = service.ask(ChatRequest(question="привет", session_id="s1"))
+
+    assert response.answer.startswith("Привет!")
+    assert response.state.step == "greeting"
+    assert answer.stages == []
 
 
-def test_ask_refuses_when_no_candidates(tmp_path: Path) -> None:
-    invoke = FakeInvoke(AnswerDraft(answer="нет", grounded=True, used_chunk_ids=[]))
-    service = ChatService(make_settings(tmp_path), search=lambda question, k: [], invoke=invoke)
+def test_filters_are_collected_step_by_step(tmp_path: Path) -> None:
+    service, intake, answer = make_service(tmp_path)
+    intake.answers["долг 310 тысяч"] = IntakeDraft(kind="situation", debt_amount=310_000)
+    intake.answers["Москва"] = IntakeDraft(kind="situation", region="Москва")
 
-    response = service.ask(ChatRequest(question="вопрос"))
+    first = service.ask(ChatRequest(question="долг 310 тысяч", session_id="s2"))
+    second = service.ask(ChatRequest(question="Москва", session_id="s2"))
+
+    # сумма ниже порога: справка сразу, регион уже не спрашиваем
+    assert first.state.step == "info"
+    assert first.state.profile.debt_amount == 310_000
+    assert first.state.profile.region is None
+    assert second.state.step == "info"
+    assert second.state.filters_passed is False
+    assert answer.stages == ["info", "info"]
+
+
+def test_question_uses_document_fragments(tmp_path: Path) -> None:
+    service, intake, answer = make_service(tmp_path)
+    intake.answers["с какой суммой берут?"] = IntakeDraft(kind="question")
+
+    response = service.ask(ChatRequest(question="с какой суммой берут?", session_id="s3"))
+
+    assert response.state.step == "rag"
+    assert response.grounded is True
+    assert response.state.retrieved == 1
+    human = str(answer.prompts[0].messages[-1].content)
+    assert "350 000" in human
+    assert "doc.docx" not in human  # модель не видит адресов источника
+    assert response.sources[0].source == "doc.docx"
+
+
+def test_weak_fragments_are_dropped(tmp_path: Path) -> None:
+    service, intake, _ = make_service(tmp_path, score=0.1)
+    intake.answers["с какой суммой берут?"] = IntakeDraft(kind="question")
+
+    response = service.ask(ChatRequest(question="с какой суммой берут?", session_id="s4"))
 
     assert response.grounded is False
-    assert response.top_score == 0.0
+    assert response.state.chunks == []
 
 
-def test_history_from_request_restores_empty_thread(tmp_path: Path) -> None:
-    """Сервис перезапущен (чекпойнтер пуст) — история берётся из тела запроса."""
-    seen: list[list[Any]] = []
+def test_artifacts_written_per_request(tmp_path: Path) -> None:
+    service, intake, _ = make_service(tmp_path)
+    intake.answers["с какой суммой берут?"] = IntakeDraft(kind="question")
 
-    def invoke(messages: list[Any]) -> AnswerDraft:
-        seen.append(messages)
-        return AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"])
+    service.ask(ChatRequest(question="с какой суммой берут?", session_id="s5"))
 
-    service = ChatService(make_settings(tmp_path), search=lambda question, k: [make_hit(0.9)], invoke=invoke)
-
-    service.ask(
-        ChatRequest(
-            question="а что там есть?",
-            session_id="client-1",
-            history=[Turn(role="user", content="какой суммой берут?"), Turn(role="assistant", content="от 350к")],
-        )
-    )
-
-    roles = [message.type for message in seen[0]]
-    assert roles == ["system", "human", "ai", "human"]
-
-
-def test_same_session_does_not_repeat_history(tmp_path: Path) -> None:
-    """Второй вопрос той же сессии не дублирует историю из запроса: она уже в чекпойнтере."""
-    seen: list[list[Any]] = []
-
-    def invoke(messages: list[Any]) -> AnswerDraft:
-        seen.append(messages)
-        return AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"])
-
-    service = ChatService(make_settings(tmp_path), search=lambda question, k: [make_hit(0.9)], invoke=invoke)
-    history = [Turn(role="user", content="первый вопрос"), Turn(role="assistant", content="первый ответ")]
-    service.ask(ChatRequest(question="второй вопрос", session_id="client-1", history=history))
-    service.ask(ChatRequest(question="третий вопрос", session_id="client-1", history=history))
-
-    contents = [str(message.content) for message in seen[1]]
-    # история из тела запроса не дублируется: в промпте она ровно один раз
-    assert contents.count("первый вопрос") == 1
-    assert contents[1:3] == ["первый вопрос", "первый ответ"]
-    assert contents[-1].startswith("Вопрос: третий вопрос")
+    artifact_dirs = [path for path in (tmp_path / "artifacts").iterdir() if path.is_dir()]
+    names = {path.name for path in artifact_dirs[0].iterdir()}
+    assert {"retrieved.json", "answer_rag.json", "llm.json"} <= names
+    trace = read_json(artifact_dirs[0] / "llm.json")
+    assert trace

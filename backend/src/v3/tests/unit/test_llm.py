@@ -1,206 +1,94 @@
-"""Тесты адаптера модели: состав промпта, параметры клиента, структурный ответ."""
+"""Тесты сборки промпта: роль, шаг, фрагменты и подсказка про недостающий фильтр."""
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, cast
+from typing import Any
 
-import pytest
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
-from pydantic import SecretStr
 
-from core.config import Settings
 from domain.models import Chunk
-from infrastructure import llm as llm_module
-from infrastructure.llm import (
-    AnswerDraft,
-    IntakeDraft,
-    build_chat_model,
-    build_condense,
-    build_intake,
-    build_messages,
-    build_structured_model,
-)
+from domain.profile import ClientProfile
+from infrastructure.llm import Prompt, build_answer_fn, build_prompt, trim_history
 
 
-def make_settings() -> Settings:
-    return Settings(api_key=SecretStr("test"))
-
-
-def make_chunk(order: int = 0) -> Chunk:
+def make_chunk() -> Chunk:
     return Chunk(
-        id=f"doc.docx-{order:04d}",
+        id="doc.docx-0000",
         source="doc.docx",
-        order=order,
-        paragraph_start=order + 1,
-        paragraph_end=order + 1,
-        text="Берём в процедуру только с суммой от 350 000 рублей.",
+        order=0,
+        paragraph_start=1,
+        paragraph_end=2,
+        text="В процедуру берут с суммой от 350 000 рублей.",
     )
 
 
-def test_messages_contain_instruction_question_and_fragments() -> None:
-    messages = build_messages("С какой суммой берут?", [make_chunk()])
+def test_prompt_has_role_step_and_question() -> None:
+    prompt = build_prompt(step="ask_debt", profile=ClientProfile(), question="хочу списать долги")
 
-    assert messages[0].type == "system"
-    # проверяем сборку сообщений, а не формулировки модели: роль + вопрос + выдержки
-    assert messages[0].type == "system"
-    assert str(messages[0].content).strip()
-    human = str(messages[1].content)
-    assert "С какой суммой берут?" in human
-    assert "[doc.docx-0000]" in human
-    assert "350 000" in human
+    assert isinstance(prompt, Prompt)
+    assert "консультант компании по банкротству" in prompt.system
+    assert "общую сумму долга" in prompt.system
+    assert prompt.messages[0].type == "system"
+    assert isinstance(prompt.messages[-1], HumanMessage)
+    assert "хочу списать долги" in str(prompt.messages[-1].content)
 
 
-class FakeStructured:
-    def __init__(self, result: object) -> None:
-        self._result = result
-        self.messages: list[Any] = []
+def test_prompt_has_no_missing_hint_when_filters_collected() -> None:
+    profile = ClientProfile(debt_amount=800_000, region="Москва")
 
-    def invoke(self, messages: list[Any]) -> object:
-        self.messages.append(messages)
-        return self._result
+    prompt = build_prompt(step="invite", profile=profile, question="запишите меня")
 
-
-class FakeChatOpenAI:
-    instances: ClassVar[list[FakeChatOpenAI]] = []
-
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-        self.structured = FakeStructured(
-            AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"])
-        )
-        FakeChatOpenAI.instances.append(self)
-
-    def with_structured_output(self, schema: type[AnswerDraft]) -> FakeStructured:
-        assert schema is AnswerDraft
-        return self.structured
+    assert "В конце задай один вопрос" not in prompt.system
+    assert "фильтры: пройдены" in prompt.inputs["состояние фильтров"]
 
 
-def test_build_chat_model_passes_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(llm_module, "ChatOpenAI", FakeChatOpenAI)
-    FakeChatOpenAI.instances.clear()
-    settings = make_settings()
+def test_failed_filters_block_the_offer_even_for_questions() -> None:
+    failed = ClientProfile(debt_amount=310_000, region="Москва")
 
-    model = build_chat_model(settings)
+    prompt = build_prompt(step="rag", profile=failed, question="а что делать?")
 
-    assert isinstance(model, FakeChatOpenAI)
-    assert model.kwargs["api_key"].get_secret_value() == "test"
-    assert model.kwargs["model"] == settings.llm_model
-    assert model.kwargs["temperature"] == settings.temperature
-    assert model.kwargs["extra_body"] == {"max_tokens": settings.max_tokens}
+    assert "не предлагай консультацию" in prompt.system
 
 
-def test_build_structured_model_returns_draft(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(llm_module, "ChatOpenAI", FakeChatOpenAI)
-    invoke = build_structured_model(make_settings())
+def test_fragments_go_into_prompt_and_dump() -> None:
+    prompt = build_prompt(step="rag", profile=ClientProfile(), question="с какой суммой берут?", chunks=[make_chunk()])
 
-    draft = invoke(build_messages("вопрос", [make_chunk()]))
-
-    assert draft.grounded is True
-    assert draft.used_chunk_ids == ["doc.docx-0000"]
-
-
-def test_build_structured_model_rejects_unexpected_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    class BadStructured(FakeStructured):
-        pass
-
-    class BadClient(FakeChatOpenAI):
-        def __init__(self, **kwargs: Any) -> None:
-            super().__init__(**kwargs)
-            self.structured = BadStructured({"answer": "dict вместо модели"})
-
-    monkeypatch.setattr(llm_module, "ChatOpenAI", BadClient)
-    invoke = build_structured_model(make_settings())
-
-    with pytest.raises(TypeError, match="ожидался AnswerDraft"):
-        invoke(build_messages("вопрос", [make_chunk()]))
+    human = str(prompt.messages[-1].content)
+    assert "от 350 000 рублей" in human
+    # ни id, ни имени файла, ни слова «фрагмент»: для модели это просто знание
+    assert "doc.docx" not in human
+    assert "фрагмент" not in human.lower()
+    assert "фрагменты" in prompt.inputs
+    assert prompt.dump()["stage"] == "rag"
 
 
-class FakeTextModel:
-    """Модель без структуры: на любой запрос возвращает заданный текст."""
+def test_history_is_trimmed_and_counted() -> None:
+    history = [HumanMessage(content="привет"), AIMessage(content="здравствуйте")]
 
-    def __init__(self, content: str) -> None:
-        self.content = content
-        self.seen: list[Any] = []
+    prompt = build_prompt(step="rag", profile=ClientProfile(), question="а сроки?", history=history)
 
-    def invoke(self, messages: list[Any]) -> AIMessage:
-        self.seen.append(messages)
-        return AIMessage(content=self.content)
+    assert len(prompt.history) == 2
+    assert prompt.inputs["история"].startswith("2 из 2")
 
 
-def test_build_condense_returns_rewritten_question() -> None:
-    model = FakeTextModel(content="  Можно ли списать долг по ипотеке?  ")
-    condense = build_condense(cast(BaseChatModel, model))
-
-    result = condense("а если ипотека?", [HumanMessage("долг 2 млн")])
-
-    assert result == "Можно ли списать долг по ипотеке?"
+def test_trim_history_returns_list() -> None:
+    assert trim_history([]) == []
 
 
-def test_build_condense_falls_back_to_question_on_empty_answer() -> None:
-    condense = build_condense(cast(BaseChatModel, FakeTextModel(content="   ")))
+def test_answer_fn_returns_text_and_records_call() -> None:
+    from core.trace import LlmTrace, capture
 
-    assert condense("а если ипотека?", [HumanMessage("долг 2 млн")]) == "а если ипотека?"
+    class FakeModel:
+        def invoke(self, messages: list[Any]) -> AIMessage:
+            return AIMessage(content="  Ответ модели.  ")
 
+    answer = build_answer_fn(FakeModel())  # type: ignore[arg-type]
+    prompt = build_prompt(step="ask_debt", profile=ClientProfile(), question="привет")
+    trace = LlmTrace()
 
-class FakeFailingModel:
-    """Модель, которая падает так же, как при упоре в max_tokens."""
+    with capture(trace):
+        text = answer(prompt)
 
-    def invoke(self, messages: list[Any]) -> AIMessage:
-        raise RuntimeError("LengthFinishReasonError")
-
-
-def test_build_condense_keeps_question_when_model_fails() -> None:
-    condense = build_condense(cast(BaseChatModel, FakeFailingModel()))
-
-    assert condense("а если ипотека?", [HumanMessage("у меня долг 500 тысяч")]) == "а если ипотека?"
-
-
-class FakeIntakeModel:
-    def __init__(self, result: object) -> None:
-        self._result = result
-        self.seen: list[Any] = []
-
-    def with_structured_output(self, schema: object) -> Any:
-        model = self
-
-        class _Structured:
-            def invoke(self, messages: list[Any]) -> object:
-                model.seen.append(messages)
-                return model._result
-
-        return _Structured()
-
-
-def test_answer_draft_has_structure_fields() -> None:
-    """Схема ответа задаёт вёрстку: суть, пункты, следующий шаг."""
-    draft = AnswerDraft(answer="Суть.", points=["факт"], next_step="Шаг.", grounded=True)
-
-    assert draft.points == ["факт"]
-    assert draft.next_step == "Шаг."
-
-
-def test_build_intake_reads_profile_slots() -> None:
-    model = FakeIntakeModel(IntakeDraft(kind="situation", debt_amount=800_000, region="Москва", has_property=True))
-
-    draft = build_intake(cast(BaseChatModel, model))("долг 800 тысяч, Москва, есть машина", [])
-
-    assert draft.kind == "situation"
-    assert draft.profile().debt_amount == 800_000
-    assert draft.profile().region == "Москва"
-    assert draft.profile().has_property is True
-
-
-def test_build_intake_falls_back_to_question_on_failure() -> None:
-    class Broken:
-        def with_structured_output(self, schema: object) -> Any:
-            class _Structured:
-                def invoke(self, messages: list[Any]) -> object:
-                    raise RuntimeError("model is down")
-
-            return _Structured()
-
-    draft = build_intake(cast(BaseChatModel, Broken()))("С какой суммой берут?", [])
-
-    assert draft.kind == "question"
-    assert draft.debt_amount is None
+    assert text == "Ответ модели."
+    assert trace.calls[0].purpose == "answer:ask_debt"
+    assert trace.calls[0].messages[0].role == "system"

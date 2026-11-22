@@ -12,7 +12,7 @@ from pydantic import SecretStr
 
 from core.config import Settings
 from domain.models import Chunk, RetrievedChunk
-from infrastructure.llm import AnswerDraft
+from infrastructure.llm import IntakeDraft, Prompt
 from main import create_app
 from services.chat_service import ChatService
 from services.index_service import IndexService
@@ -42,10 +42,13 @@ def make_service(tmp_path: Path, *, score: float = 0.9) -> ChatService:
     def search(question: str, k: int) -> list[RetrievedChunk]:
         return [RetrievedChunk(chunk=make_chunk(), score=score, rank=1)]
 
-    def invoke(messages: list[Any]) -> AnswerDraft:
-        return AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"])
+    def answer(prompt: Prompt) -> str:
+        return "От 350 000 рублей."
 
-    return ChatService(make_settings(tmp_path), search=search, invoke=invoke)
+    def intake(question: str, history: list[Any]) -> IntakeDraft:
+        return IntakeDraft(kind="question")
+
+    return ChatService(make_settings(tmp_path), search=search, answer_fn=answer, intake=intake)
 
 
 @pytest.fixture
@@ -114,11 +117,16 @@ def test_lifespan_builds_service_from_index(monkeypatch: pytest.MonkeyPatch, tmp
         def search(self, question: str, k: int) -> list[RetrievedChunk]:
             return [RetrievedChunk(chunk=make_chunk(), score=0.9, rank=1)]
 
-    def fake_invoke(messages: list[Any]) -> AnswerDraft:
-        return AnswerDraft(answer="От 350 000 рублей.", grounded=True, used_chunk_ids=["doc.docx-0000"])
+    def fake_answer(prompt: Prompt) -> str:
+        return "От 350 000 рублей."
 
     monkeypatch.setattr("main.IndexService", FakeIndex)
-    monkeypatch.setattr("main.build_structured_model", lambda settings: fake_invoke)
+    monkeypatch.setattr("main.build_answer_fn", lambda model: fake_answer)
+
+    def fake_intake(question: str, history: list[Any]) -> IntakeDraft:
+        return IntakeDraft(kind="question")
+
+    monkeypatch.setattr("main.build_intake", lambda model: fake_intake)
     app = create_app(make_settings(tmp_path))
 
     with TestClient(app) as client:

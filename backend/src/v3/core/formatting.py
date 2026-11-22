@@ -10,12 +10,36 @@ from __future__ import annotations
 import re
 
 _SPACES = re.compile(r"[ \t]+")
+# следы источника, которые модель иногда проговаривает вслух
+_SOURCE_REF = re.compile(
+    r"(?i)\b(?:согласно|по|из|во|со|в)\s+(?:предоставленн\w+\s+)?"
+    r"(?:документ\w*|фрагмент\w*|источник\w*|материал\w*|баз\w+\s+знаний|контекст\w*)\b[ ,:—-]*"
+)
+_BRACKET_ID = re.compile(r"\[[^\]]*?-\d{4}\]\s*")
 _ITEM = re.compile(r"\s+(?=[-•*]\s)")
 _MARK = re.compile(r"^[-•*]\s+")
 
 
+def _capitalize_first(text: str) -> str:
+    for index, char in enumerate(text):
+        if char.isalpha():
+            return text[:index] + char.upper() + text[index + 1 :]
+    return text
+
+
+def strip_source_refs(text: str) -> str:
+    """Убрать упоминания документа, фрагмента, источника: клиент видит живого консультанта."""
+    # сначала ссылки на абзацы, потом слова-источники: иначе запятая от ссылки останется в начале
+    cleaned = _SOURCE_REF.sub("", _BRACKET_ID.sub("", text))
+    cleaned = _SPACES.sub(" ", cleaned).strip(" ,;:")
+    if cleaned == text:  # ссылок не было — текст не трогаем
+        return text
+    return _capitalize_first(cleaned) if cleaned else text
+
+
 def normalize_answer(text: str) -> str:
-    """Разложить инлайн-пункты по строкам и отделить список пустой строкой."""
+    """Убрать следы источника, разложить инлайн-пункты по строкам и отделить список пустой строкой."""
+    text = strip_source_refs(text)
     blocks: list[str] = []
     for block in text.strip().split("\n\n"):
         flat = _SPACES.sub(" ", block.replace("\n", " ")).strip()
