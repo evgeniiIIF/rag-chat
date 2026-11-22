@@ -32,3 +32,9 @@ ServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 def chat(payload: ChatRequest, service: ServiceDep) -> ChatResponse:
     """Ответ по документу или честный отказ."""
     return service.ask(payload)
+
+
+@router.post("/session/reset", status_code=status.HTTP_204_NO_CONTENT)
+def reset_session(session_id: str, service: ServiceDep) -> None:
+    """Удалить чекпойнт сессии (кнопка «Очистить чат»)."""
+    service.reset_session(session_id)

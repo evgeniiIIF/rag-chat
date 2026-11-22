@@ -1,4 +1,4 @@
-"""Узел отказа: честный ответ «нет оснований» и реплика в историю диалога."""
+"""Узел отказа: честный ответ «нет оснований» и реплика в историю."""
 
 from __future__ import annotations
 
@@ -10,10 +10,8 @@ from graph.nodes import NodeFn, NodeResult
 
 
 def make_refuse_node() -> NodeFn:
-    """Узел, который пишет стандартный отказ и добавляет его в историю."""
-
     def refuse(state: GraphState) -> NodeResult:
-        answer = refusal(state.get("refusal_reason", "no_context"))
+        answer = refusal(state.refusal_reason or "no_context")  # type: ignore[arg-type]
         return {"answer": answer, "messages": [AIMessage(content=answer.answer)]}
 
     return refuse

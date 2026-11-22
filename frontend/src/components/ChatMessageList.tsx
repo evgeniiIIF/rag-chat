@@ -61,26 +61,56 @@ export function renderInline(text: string): ReactNode[] {
   });
 }
 
-function MessageText({ text }: { text: string }): JSX.Element {
-  const blocks = parseBlocks(text);
+type RenderBlock = MessageBlock | { kind: "q"; text: string };
+
+const QUESTION_END = /\?\**$/;
+
+/** Последний абзац-вопрос ассистента выделяем отдельной плашкой (вопрос фильтра, приглашение). */
+export function markQuestion(blocks: MessageBlock[]): RenderBlock[] {
+  const last = blocks[blocks.length - 1];
+  if (blocks.length > 1 && last?.kind === "p" && QUESTION_END.test(last.text.trim())) {
+    return [...blocks.slice(0, -1), { kind: "q", text: last.text }];
+  }
+  return blocks;
+}
+
+function MessageText({ text, role }: { text: string; role: "user" | "assistant" }): JSX.Element {
+  const parsed = parseBlocks(text);
+  const blocks: RenderBlock[] = role === "assistant" ? markQuestion(parsed) : parsed;
   if (blocks.length <= 1 && !text.includes("- ")) {
     return <p className="whitespace-pre-wrap break-words">{renderInline(text)}</p>;
   }
   return (
-    <div className="space-y-2">
-      {blocks.map((block, index) =>
-        block.kind === "ul" ? (
-          <ul key={index} className="list-disc space-y-1 pl-5">
-            {block.items.map((item, itemIndex) => (
-              <li key={itemIndex}>{renderInline(item)}</li>
-            ))}
-          </ul>
-        ) : (
+    <div className="space-y-3">
+      {blocks.map((block, index) => {
+        if (block.kind === "ul") {
+          return (
+            <ul key={index} className="space-y-1.5">
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex} className="flex gap-2">
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                  <span className="min-w-0 break-words">{renderInline(item)}</span>
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        if (block.kind === "q") {
+          return (
+            <p
+              key={index}
+              className="whitespace-pre-wrap break-words rounded-xl border-l-4 border-accent bg-accent/5 px-3 py-2 font-medium text-slate-900 dark:text-white"
+            >
+              {renderInline(block.text)}
+            </p>
+          );
+        }
+        return (
           <p key={index} className="whitespace-pre-wrap break-words">
             {renderInline(block.text)}
           </p>
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -106,7 +136,7 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
               "flex max-w-[92%] items-start gap-2 rounded-2xl px-3 py-2 text-sm shadow-sm sm:max-w-[85%] sm:gap-3 sm:px-4 sm:py-3",
               m.role === "user"
                 ? "bg-accent text-white"
-                : "bg-white text-slate-800 dark:bg-slate-900 dark:text-slate-100",
+                : "border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
             ].join(" ")}
           >
             <div
@@ -119,7 +149,7 @@ export function ChatMessageList({ messages, pending }: ChatMessageListProps): JS
             </div>
             <div className="min-w-0">
               <div className="leading-relaxed">
-                <MessageText text={m.text} />
+                <MessageText text={m.text} role={m.role} />
               </div>
             </div>
           </div>

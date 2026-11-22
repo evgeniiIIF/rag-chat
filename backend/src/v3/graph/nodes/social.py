@@ -1,4 +1,4 @@
-"""Узел соц-реплики: приветствие/спасибо/прощание отвечаются сразу, без поиска и модели."""
+"""Узел соц-реплики: приветствие/спасибо/прощание — готовый текст (D1), без LLM."""
 
 from __future__ import annotations
 
@@ -12,12 +12,10 @@ from graph.nodes import NodeFn, NodeResult
 
 
 def make_social_node() -> NodeFn:
-    """Узел, который отдаёт готовую реплику и завершает проход."""
-
     def social(state: GraphState) -> NodeResult:
-        intent = detect(state["question"])
+        intent = detect(state.question)
         if intent is Intent.GREETING:
-            reply = GREETING_REPEAT if already_greeted(state.get("messages", [])[:-1]) else GREETING_FIRST
+            reply = GREETING_REPEAT if already_greeted(state.messages[:-1]) else GREETING_FIRST
         elif intent is Intent.THANKS:
             reply = THANKS_REPLY
         else:

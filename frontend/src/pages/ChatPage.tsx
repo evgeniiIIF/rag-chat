@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect, useLayoutEffect } from "react";
-import { useChat, getSessionId, type ChatResponse } from "@/features/chat";
+import { useChat, getSessionId, resetSessionId, type ChatResponse } from "@/features/chat";
 import { UIInput } from "@/shared/ui";
 import { ChatMessageList } from "@/components/ChatMessageList";
 
@@ -18,7 +18,7 @@ export function ChatPage(): JSX.Element {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { mutateAsync, isPending, error } = useChat();
+  const { mutateAsync, isPending } = useChat();
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -47,6 +47,18 @@ export function ChatPage(): JSX.Element {
     }
   }
 
+  async function clearChat(): Promise<void> {
+    const oldSession = getSessionId();
+    resetSessionId();
+    setMessages([]);
+    setDraft("");
+    try {
+      await fetch(`/api/session/reset?session_id=${encodeURIComponent(oldSession)}`, { method: "POST" });
+    } catch {
+      /* offline — новый session_id уже в localStorage, старый чекпойнт истечёт по TTL */
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header flex h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 backdrop-blur-md sm:h-auto sm:px-6 sm:py-4">
@@ -60,6 +72,14 @@ export function ChatPage(): JSX.Element {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={clearChat}
+            className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-slate-600 hover:bg-slate-700/60 hover:text-white"
+            title="Начать новый диалог (история на сервере очистится)"
+          >
+            Очистить чат
+          </button>
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
             <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>

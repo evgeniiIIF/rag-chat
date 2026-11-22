@@ -12,10 +12,8 @@ SearchFn = Callable[[str, int], Sequence[RetrievedChunk]]
 
 
 def make_retrieve_node(search: SearchFn) -> NodeFn:
-    """Узел, который наполняет `retrieved` выдачей гибридного поиска."""
-
     def retrieve(state: GraphState) -> NodeResult:
-        query = state.get("search_query") or state["question"]
-        return {"retrieved": list(search(query, state["k"]))}
+        query = state.search_query or state.question
+        return {"retrieved": list(search(query, state.k))}
 
     return retrieve

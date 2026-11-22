@@ -7,10 +7,8 @@ from graph.nodes import NodeFn, NodeResult
 
 
 def make_grade_node(threshold: float) -> NodeFn:
-    """Узел, который пишет `top_score`, решает `refused` и объясняет причину отказа."""
-
     def grade(state: GraphState) -> NodeResult:
-        hits = state.get("retrieved", [])
+        hits = state.retrieved
         if not hits:
             return {"top_score": 0.0, "refused": True, "refusal_reason": "no_context"}
         top_score = max(hit.score for hit in hits)

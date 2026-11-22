@@ -1,37 +1,43 @@
-"""Состояние графа LangGraph (TypedDict, фреймворк-корень).
+"""Состояние графа (pydantic BaseModel).
 
-Узел не мутирует state: он возвращает словарь с изменёнными ключами.
-Обязательны только поля, которые пишет entrypoint; остальные появляются по мере
-движения по графу (`specs/001-v3-langgraph-rag/data-model.md`).
+messages — типизированные сообщения LangChain (System/Human/AI); add_messages склеивает
+историю между ходами. Остальные поля — данные текущего хода и профиль клиента.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, NotRequired, TypedDict
+from typing import Annotated, Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
 
-from core.behavior import RefusalReason
 from domain.models import Answer, RetrievedChunk
 from domain.profile import ClientProfile
 
 
-class GraphState(TypedDict):
-    """Полное состояние запроса: вход, история, выдача поиска, решение об отказе, ответ."""
+class GraphState(BaseModel):
+    """Всё, что путешествует по графу: история, вопрос, профиль, шаг, RAG-поля."""
 
-    request_id: str
-    question: str
-    k: int
-    # история диалога: add_messages дописывает реплики и хранит их в чекпойнтере по thread_id
-    messages: Annotated[list[BaseMessage], add_messages]
-    # вопрос, переписанный с учётом истории (follow-up); без истории совпадает с question
-    search_query: NotRequired[str]
-    retrieved: NotRequired[list[RetrievedChunk]]
-    top_score: NotRequired[float]
-    refused: NotRequired[bool]
-    refusal_reason: NotRequired[RefusalReason]
-    # профиль клиента из беседы и следующий шаг сценария: retrieve (по документу) или ask (сценарий)
-    profile: NotRequired[ClientProfile]
-    next_step: NotRequired[str]
-    answer: NotRequired[Answer | None]
+    # история диалога: LangGraph сам добавляет реплики узлов через add_messages
+    messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
+
+    # вход текущего хода
+    request_id: str = ""
+    question: str = ""
+    k: int = 3  # сколько фрагментов искать (из ChatRequest.k или Settings.retriever_k)
+
+    # профиль (заполняется extract)
+    profile: ClientProfile = Field(default_factory=ClientProfile)
+
+    # маршрут текущего хода (ставит extract + route)
+    kind: Literal["situation", "question"] = "situation"
+    step: str = ""
+
+    # RAG-ветка
+    search_query: str = ""
+    retrieved: list[RetrievedChunk] = Field(default_factory=list)
+    top_score: float = 0.0
+    refused: bool = False
+    refusal_reason: str = ""
+    answer: Answer | None = None

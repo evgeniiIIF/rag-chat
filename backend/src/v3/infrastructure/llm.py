@@ -25,6 +25,7 @@ from core.behavior import (
     CONSULT_ADDENDUM,
     FRAGMENTS_HEADER,
     HISTORY_TOKEN_BUDGET,
+    INFO_ADDENDUM,
     INTAKE_SYSTEM_PROMPT,
     QUALIFY_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
@@ -35,7 +36,7 @@ from domain.profile import ClientProfile
 
 logger = logging.getLogger(__name__)
 
-type Stage = Literal["qualify", "consult"]
+type Stage = Literal["qualify", "consult", "info"]
 
 CONDENSE_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -61,6 +62,14 @@ CONSULT_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+INFO_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT + INFO_ADDENDUM),
+        MessagesPlaceholder("history", optional=True),
+        ("human", "Вопрос: {question}\n\n" + FRAGMENTS_HEADER + "\n{fragments}"),
+    ]
+)
+
 INTAKE_PROMPT = ChatPromptTemplate.from_messages(
     [
         ("system", INTAKE_SYSTEM_PROMPT),
@@ -71,19 +80,31 @@ INTAKE_PROMPT = ChatPromptTemplate.from_messages(
 
 
 class IntakeDraft(BaseModel):
-    """Разбор реплики: вопрос по правилам или рассказ о своей ситуации + слоты профиля."""
+    """Разбор реплики: kind + слоты профиля (debt, region, phone, time, готовность)."""
 
     kind: Literal["question", "situation"] = Field(
-        description="question — вопрос про правила процедуры, situation — про себя или общий вопрос"
+        description="question — вопрос про правила процедуры; situation — про себя/ответ на вопрос сценария"
     )
     debt_amount: int | None = Field(default=None, description="сумма долга в рублях, если названа")
     region: str | None = Field(default=None, description="регион прописки, если назван")
-    has_property: bool | None = Field(default=None, description="есть ли квартира, машина, ипотека, залог")
+    phone: str | None = Field(default=None, description="телефон клиента, если назван")
+    consultation_time: str | None = Field(default=None, description="удобное время консультации, если названо")
+    ready_to_wait: bool = Field(default=False, description="клиент подтвердил, что готов ждать звонка юриста")
     wants_consultation: bool = Field(default=False, description="клиент просит юриста/консультацию или согласен")
+    has_property: bool | None = Field(default=None, description="контекст: есть ли квартира, машина, ипотека, залог")
+    facts: dict[str, str] = Field(default_factory=dict, description="прочие деловые факты из реплики")
 
     def profile(self) -> ClientProfile:
         """Слоты разбора → профиль клиента."""
-        return ClientProfile(debt_amount=self.debt_amount, region=self.region, has_property=self.has_property)
+        return ClientProfile(
+            debt_amount=self.debt_amount,
+            region=self.region,
+            phone=self.phone,
+            consultation_time=self.consultation_time,
+            ready_to_wait=self.ready_to_wait,
+            wants_consultation=self.wants_consultation,
+            facts=self.facts,
+        )
 
 
 class AnswerDraft(BaseModel):
@@ -112,7 +133,7 @@ def build_messages(
         f"[{chunk.id}] (фрагмент {chunk.paragraph_start}-{chunk.paragraph_end} файла {chunk.source})\n{chunk.text}"
         for chunk in chunks
     )
-    prompt = QUALIFY_PROMPT if stage == "qualify" else CONSULT_PROMPT
+    prompt = {"qualify": QUALIFY_PROMPT, "info": INFO_PROMPT}.get(stage, CONSULT_PROMPT)
     return prompt.format_messages(history=trim_history(history), question=question, fragments=fragments)
 
 
