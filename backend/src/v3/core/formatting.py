@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from core.behavior import CASE_CUT_RE, MAX_SENTENCES, OPERATOR_RE, STORY_RE
+
 _SPACES = re.compile(r"[ \t]+")
 # следы источника, которые модель иногда проговаривает вслух
 _SOURCE_REF = re.compile(
@@ -58,3 +60,43 @@ def normalize_answer(text: str) -> str:
         listing = "\n".join(f"- {item}" for item in items)
         blocks.append(f"{head}\n\n{listing}" if head else listing)
     return "\n\n".join(blocks)
+
+
+_SENTENCE = re.compile(r"(?<=[.!?…])\s+(?=[А-ЯЁA-Z«\"(—])")
+
+
+def _is_question(sentence: str) -> bool:
+    return sentence.rstrip().rstrip('»"').endswith("?")
+
+
+def enforce_style(text: str, step: str) -> str:
+    """Дисциплина ответа в коде, а не в промпте: без чужих кейсов, без вопросов на info, ограничение длины.
+
+    Финальный вопрос (шаг к записи) при обрезке сохраняется. Ответ со списком не трогаем.
+    """
+    if re.search(r"(?m)^\s*[-•*]\s", text):
+        return text
+    sentences = [part for part in _SENTENCE.split(" ".join(text.split())) if part]
+    if not sentences:
+        return text
+    kept = [part for part in sentences if not STORY_RE.search(part)] or sentences
+    if step == "info":
+        kept = [part for part in kept if not _is_question(part)] or kept
+    limit = MAX_SENTENCES.get(step, 5)
+    result = kept[:limit]
+    if len(kept) > limit and step != "info" and _is_question(kept[-1]):
+        result = [*result[:-1], kept[-1]]
+    return " ".join(result)
+
+
+def knowledge_text(text: str) -> str:
+    """Знания для клиента: без инструкций операторам и без кейсов. Пустая строка — фрагмент не годится."""
+    flat = text.strip()
+    if not flat or OPERATOR_RE.search(flat):
+        return ""
+    if flat[0].islower():  # продолжение предложения из прошлого фрагмента: обычно хвост кейса
+        return ""
+    cut = CASE_CUT_RE.search(flat)
+    if cut:
+        flat = flat[: cut.start()].strip()
+    return flat

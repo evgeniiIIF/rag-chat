@@ -26,7 +26,7 @@ def test_prompt_has_role_step_and_question() -> None:
     prompt = build_prompt(step="ask_debt", profile=ClientProfile(), question="хочу списать долги")
 
     assert isinstance(prompt, Prompt)
-    assert "консультант компании по банкротству" in prompt.system
+    assert "ассистент компании по банкротству" in prompt.system
     assert "общую сумму долга" in prompt.system
     assert prompt.messages[0].type == "system"
     assert isinstance(prompt.messages[-1], HumanMessage)

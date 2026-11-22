@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from domain.profile import ClientProfile
-from domain.scenario import CONTEXT_STEPS, STEP_QUERIES, next_step, search_query
+from domain.scenario import CONTEXT_STEPS, INFO_QUERIES, STEP_QUERIES, next_step, search_query
 
 
 def test_question_goes_to_context_answer() -> None:
@@ -45,8 +45,15 @@ def test_slot_can_change_at_any_step() -> None:
 
 
 def test_search_query_follows_the_step() -> None:
+    profile = ClientProfile()
     # вопрос клиента ищется как есть, на остальных шагах — то, что делаем сейчас
-    assert search_query("rag", "а какие сроки?") == "а какие сроки?"
-    queries = {step: search_query(step, "800 тысяч") for step in STEP_QUERIES}
+    assert search_query("rag", "а какие сроки?", profile) == "а какие сроки?"
+    queries = {step: search_query(step, "800 тысяч", profile) for step in STEP_QUERIES}
     assert len(set(queries.values())) == len(queries)  # у каждого шага свой запрос
-    assert queries["ask_region"] != queries["ask_debt"]
+
+
+def test_info_query_depends_on_the_failed_filter() -> None:
+    # на info ищем то, что предложить вместо процедуры, и только по проваленному фильтру
+    assert search_query("info", "320 тысяч", ClientProfile(debt_amount=320_000)) == INFO_QUERIES["debt"]
+    assert search_query("info", "Чечня", ClientProfile(region="Чечня")) == INFO_QUERIES["region"]
+    assert search_query("info", "ну и что", ClientProfile()) == STEP_QUERIES["info"]

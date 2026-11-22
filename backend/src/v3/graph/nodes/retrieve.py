@@ -19,10 +19,10 @@ def make_retrieve_node(search: SearchFn, condense: CondenseFn, threshold: float)
         if step == "rag":
             # follow-up («а сроки?») переписывается в самостоятельный вопрос по истории
             question = condense(state.question, state.messages[:-1]) if len(state.messages) > 1 else state.question
-            query = search_query(step, question)
+            query = search_query(step, question, state.profile)
         else:
             # «800 тысяч» или «ставрополь» — плохой поисковый запрос: ищем то, что нужно на шаге
-            query = search_query(step, state.question)
+            query = search_query(step, state.question, state.profile)
         hits = [hit for hit in search(query, state.k) if hit.score >= threshold]
         return {"search_query": query, "retrieved": hits, "grounded": bool(hits)}
 

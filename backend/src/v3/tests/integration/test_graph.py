@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from domain.graph_state import GraphState
 from domain.models import Chunk, RetrievedChunk
 from domain.profile import ClientProfile
-from domain.scenario import STEP_QUERIES
+from domain.scenario import INFO_QUERIES, STEP_QUERIES
 from graph.build import build_graph
 from infrastructure.llm import IntakeDraft, Prompt
 
@@ -138,7 +138,7 @@ def test_one_failed_filter_skips_the_next_question(tmp_path: Path) -> None:
     assert "не предлагай консультацию" in answer.prompts[0].system.lower()
 
 
-def test_info_step_keeps_filter_question(tmp_path: Path) -> None:
+def test_info_step_searches_by_the_failed_filter(tmp_path: Path) -> None:
     answer = FakeAnswer()
     graph = make_graph(tmp_path, FakeIntake({}), answer)
     profile = ClientProfile(debt_amount=200_000, region="Москва")
@@ -146,7 +146,8 @@ def test_info_step_keeps_filter_question(tmp_path: Path) -> None:
     result = run(graph, "и что теперь?", profile)
 
     assert result["step"] == "info"
-    assert result["search_query"] == STEP_QUERIES["info"]
+    # фильтр провален по долгу: ищем, что предложить вместо процедуры
+    assert result["search_query"] == INFO_QUERIES["debt"]
     assert "не предлагай консультацию" in answer.prompts[0].system.lower()
 
 

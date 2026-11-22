@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -24,6 +24,7 @@ from schemas.chat import (
     ChatResponse,
     ChunkSchema,
     LlmCallSchema,
+    LlmMessageSchema,
     ProfileSchema,
     SourceSchema,
     StateSchema,
@@ -87,14 +88,14 @@ class ChatService:
         self._conn.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
         self._conn.commit()
 
-    def _restore(self, config: dict[str, Any], history: list[Turn]) -> tuple[list, ClientProfile]:
+    def _restore(self, config: dict[str, Any], history: list[Turn]) -> tuple[list[BaseMessage], ClientProfile]:
         """История и профиль из чекпойнтера; если его нет — из запроса (после рестарта сервиса)."""
         stored = self._graph.get_state(config).values
         profile = stored.get("profile")
         known = profile if isinstance(profile, ClientProfile) else ClientProfile()
         if stored.get("messages"):
             return [], known
-        messages = [
+        messages: list[BaseMessage] = [
             HumanMessage(content=turn.content) if turn.role == "user" else AIMessage(content=turn.content)
             for turn in history
         ]
@@ -110,6 +111,7 @@ class ChatService:
             question=request.question,
             messages=[*restored_messages, HumanMessage(content=request.question)],
             profile=restored_profile,
+            k=request.k or self._settings.retriever_k,
         )
         trace = LlmTrace()
         with capture(trace):
@@ -162,9 +164,9 @@ class ChatService:
                         model=call.model,
                         stage=call.stage,
                         system=call.system,
-                        history=[message.model_dump() for message in call.history],
+                        history=[LlmMessageSchema(**message.model_dump()) for message in call.history],
                         inputs=call.inputs,
-                        messages=[message.model_dump() for message in call.messages],
+                        messages=[LlmMessageSchema(**message.model_dump()) for message in call.messages],
                         output=call.output,
                     )
                     for call in trace.calls

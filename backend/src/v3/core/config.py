@@ -47,18 +47,9 @@ class Settings(BaseSettings):
     retriever_k: int = Field(default=3, ge=1, le=10)
     score_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
 
-    # квалификация из документа ¶60
-    min_debt_rub: int = Field(default=350_000, ge=0)
-    excluded_regions: str = "чечня,днр,лнр,владимирская"
-
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=800, ge=1, le=8192)
     log_level: str = "INFO"
-
-    @property
-    def excluded_region_list(self) -> tuple[str, ...]:
-        """Регионы, в которых компания не работает (документ ¶60)."""
-        return tuple(part.strip() for part in self.excluded_regions.split(",") if part.strip())
 
 
 @lru_cache(maxsize=1)

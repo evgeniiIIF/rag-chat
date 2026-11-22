@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+from core.behavior import filter_state_text
 from domain.profile import (
     MAX_DEBT_RUB,
+    MAX_FACTS,
     MIN_DEBT_RUB,
     ClientProfile,
     clean_debt,
     clean_region,
     extract_phone,
     extract_time,
-    filter_state_text,
     is_excluded_region,
+    merge_facts,
     qualifies_by_debt,
 )
 
@@ -71,7 +73,7 @@ def test_filter_state_text_explains_each_case() -> None:
 
 
 def test_extract_phone() -> None:
-    assert extract_phone("мой номер +7 (999) 123-45-67") == "+7 (999) 123-45-67"
+    assert extract_phone("мой номер +7 (999) 123-45-67") == "+79991234567"
 
 
 def test_extract_time() -> None:
@@ -79,3 +81,23 @@ def test_extract_time() -> None:
     assert extract_time("можно завтра вечером") == "завтра"
     assert extract_time("в 18 часов удобно") == "18 часов"
     assert extract_time("не важно") is None
+
+
+def test_facts_keep_only_fresh_values() -> None:
+    facts = merge_facts({"долг": "300 тысяч"}, {"долг": "320 тысяч"})
+
+    assert facts == {"долг": "320 тысяч"}
+
+
+def test_same_fact_under_a_new_name_does_not_duplicate() -> None:
+    facts = merge_facts({"долг": "около 300 тысяч", "цель": "хочет банкротство"}, {"debts": "около 300 тысяч"})
+
+    assert facts == {"цель": "хочет банкротство", "debts": "около 300 тысяч"}
+
+
+def test_placeholder_facts_are_dropped_and_list_is_capped() -> None:
+    facts = merge_facts({}, {"property": "неизвестно", **{f"k{index}": f"v{index}" for index in range(8)}})
+
+    assert "property" not in facts
+    assert len(facts) <= MAX_FACTS
+    assert list(facts) == [f"k{index}" for index in range(8 - MAX_FACTS, 8)]

@@ -13,18 +13,36 @@ MIN_DEBT_RUB: int = 350_000
 # больше 100 млн — не долг физлица, а склейка цифр или ошибка разбора
 MAX_DEBT_RUB: int = 100_000_000
 REGION_MAX_LENGTH: int = 64
+# факты в промпте — только свежие и без повторов: иначе профиль пухнет и подсказывает модели домыслы
+MAX_FACTS: int = 5
+# значения-заглушки модели: «неизвестно» ничего не сообщает клиенту
+_EMPTY_FACTS = frozenset(
+    {
+        "",
+        "нет",
+        "неизвестно",
+        "не известно",
+        "нет данных",
+        "не указано",
+        "не указан",
+        "не уточнено",
+        "н/д",
+        "none",
+        "null",
+    }
+)
 
-# регионы, с которыми компания не работает (КЦ ¶60)
-EXCLUDED_REGIONS: tuple[str, ...] = ("чечня", "чеченская", "днр", "лнр", "владимирская")
+# регионы, с которыми компания не работает (КЦ ¶60); основы слов, чтобы ловить любые падежи
+EXCLUDED_REGIONS: tuple[str, ...] = ("чечн", "чечен", "днр", "лнр", "владимир", "донецк", "луганск")
 
 _REGION_OK = re.compile(r"^[а-яё][а-яё\s\-.]*$", re.IGNORECASE)
 _PHONE = re.compile(
-    r"(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}"
-    r"|\d{10,11}"
-    r"|\d{2}[\s\-]\d{2}[\s\-]\d{2,4}(?:[\s\-]\d{2,4})?"
+    r"(?<!\d)(?:\+7|8|7)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}(?!\d)"
+    r"|(?<!\d)\(?[3489]\d{2}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}(?!\d)"
 )
 _CLOCK = re.compile(r"\b(\d{1,2})[:.](\d{2})\b")
 _HOUR = re.compile(r"\b(\d{1,2})\s*(?:час|часа|часов)\b", re.IGNORECASE)
+_AT_HOUR = re.compile(r"(?<!\w)в\s+(\d{1,2})(?:[:.](\d{2}))?(?!\d)(?!\s*(?:тыс|руб|млн|%|лет))", re.IGNORECASE)
 _DAY = re.compile(r"\b(сегодня|завтра|послезавтра|сейчас|утром|днём|днем|вечером)\b", re.IGNORECASE)
 
 
@@ -32,12 +50,14 @@ class ClientProfile(BaseModel):
     """Слоты разговора. Любое поле можно изменить на любом шаге.
 
     debt_amount и region — обязательные фильтры; phone и consultation_time нужны для записи.
+    phone_raw — номер, который клиент назвал, но он неполный: шаг остаётся invite.
     facts — контекст клиента из реплик (какие долги, имущество), фильтры не затрагивает.
     """
 
     debt_amount: int | None = None
     region: str | None = None
     phone: str | None = None
+    phone_raw: str | None = None
     consultation_time: str | None = None
     facts: dict[str, str] = Field(default_factory=dict)
 
@@ -91,51 +111,97 @@ def clean_region(value: str | None) -> str | None:
     return flat
 
 
-def filter_state_text(profile: ClientProfile) -> str:
-    """Состояние фильтров для промпта."""
-    if profile.debt_amount is None:
-        debt = "не указан"
-    elif qualifies_by_debt(profile.debt_amount):
-        debt = f"{profile.debt_amount} ₽ (подходит)"
-    else:
-        debt = f"{profile.debt_amount} ₽ (меньше 350 000 ₽)"
-    if profile.region is None:
-        region = "не указан"
-    elif is_excluded_region(profile.region):
-        region = f"{profile.region} (не обслуживается)"
-    else:
-        region = f"{profile.region} (подходит)"
-    return f"долг: {debt}; регион: {region}; фильтры: {'пройдены' if profile.filters_ok() else 'не пройдены'}"
+def merge_facts(old: dict[str, str], new: dict[str, str]) -> dict[str, str]:
+    """Слить факты о клиенте: свежие значения заменяют старые, повторы по смыслу и заглушки уходят."""
+    merged = {str(key).strip(): str(value).strip() for key, value in old.items()}
+    for key, value in new.items():
+        clean_key, clean_value = str(key).strip(), str(value).strip()
+        if not clean_key or clean_value.lower().strip(".") in _EMPTY_FACTS:
+            continue
+        # тот же факт под другим именем (долг/debts, цель/goal): старое имя уходит, значение свежее
+        for stale in [k for k, v in merged.items() if v.lower() == clean_value.lower() and k != clean_key]:
+            merged.pop(stale)
+        merged[clean_key] = clean_value
+    return dict(list(merged.items())[-MAX_FACTS:])
 
 
-def profile_text(profile: ClientProfile) -> str:
-    """Что известно о клиенте, для промпта."""
-    parts: list[str] = []
-    if profile.debt_amount is not None:
-        parts.append(f"сумма долга: {profile.debt_amount} ₽")
-    if profile.region:
-        parts.append(f"регион: {profile.region}")
-    if profile.phone:
-        parts.append(f"телефон: {profile.phone}")
-    if profile.consultation_time:
-        parts.append(f"удобное время: {profile.consultation_time}")
-    if profile.facts:
-        parts.append("; ".join(f"{key}: {value}" for key, value in profile.facts.items()))
-    return "; ".join(parts) if parts else "(пока ничего)"
+_PHONE_SHORT = re.compile(r"(?<![\d:.])\d{2}[\s\-]\d{2}[\s\-]\d{2}(?![\d:.])(?!\s*(?:тыс|руб|млн|%))")
+_PHONE_BARE_SHORT = re.compile(r"(?<!\d)\d{6}(?!\d)")
 
 
-def extract_phone(text: str) -> str | None:
-    match = _PHONE.search(text)
-    return match.group(0).strip() if match else None
+def normalize_phone(raw: str) -> str | None:
+    """Номер: 6 цифр (местный) → NN-NN-NN, 10 → +7XXXXXXXXXX, 11 (7 или 8 в начале) → +7XXXXXXXXXX.
+
+    Любое другое число цифр — номер неполный, None.
+    """
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 6:
+        return f"{digits[:2]}-{digits[2:4]}-{digits[4:]}"
+    if len(digits) == 11 and digits[0] in "78":
+        return "+7" + digits[1:]
+    if len(digits) == 10:
+        return "+7" + digits
+    return None
+
+
+def extract_phone(text: str, *, allow_bare_short: bool = False) -> str | None:
+    """Первый номер из текста: 11/10 цифр или шесть цифр с разделителями («66 44 55»).
+
+    Шесть цифр подряд без разделителей («664455») похожи на сумму: номером они считаются,
+    только если вызывающий код ждёт телефон (`allow_bare_short`).
+    """
+    for pattern in (_PHONE, _PHONE_SHORT):
+        for match in pattern.finditer(text):
+            phone = normalize_phone(match.group(0))
+            if phone:
+                return phone
+    if allow_bare_short:
+        bare = _PHONE_BARE_SHORT.search(text)
+        if bare:
+            return normalize_phone(bare.group(0))
+    return None
 
 
 def extract_time(text: str) -> str | None:
-    """Fallback разбора времени: «14:39», «в 15 часов», «завтра вечером»."""
+    """Fallback разбора времени: «14:39», «в 15 часов», «завтра в 12» → «завтра 12:00»."""
+    day_match = _DAY.search(text)
+    day = day_match.group(0).strip() if day_match else None
     clock = _CLOCK.search(text)
-    if clock:
-        return f"{clock.group(1)}:{clock.group(2)}"
     hour = _HOUR.search(text)
-    if hour:
-        return f"{hour.group(1)} часов"
-    day = _DAY.search(text)
-    return day.group(0).strip() if day else None
+    at_hour = _AT_HOUR.search(text)
+    slot: str | None = None
+    if clock and int(clock.group(1)) <= 23 and int(clock.group(2)) <= 59:
+        slot = f"{int(clock.group(1)):02d}:{clock.group(2)}"
+    elif hour:
+        slot = f"{hour.group(1)} часов"
+    elif at_hour and int(at_hour.group(1)) <= 23:
+        slot = f"{int(at_hour.group(1)):02d}:{at_hour.group(2) or '00'}"
+    if day and slot:
+        return f"{day} {slot}"
+    return slot or day
+
+
+_AMOUNT_ONLY = re.compile(
+    r"^\s*(?:около\s+|примерно\s+)?(\d{1,3}(?:\s\d{3})+|\d+)([.,]\d+)?\s*"
+    r"(тыс\w*|т\.?\s?р\.?|к|k|млн\w*|миллион\w*|руб\w*|р\.?|₽)?\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_amount(text: str) -> int | None:
+    """Сумма из реплики, состоящей только из суммы: «323 тыс», «1,5 млн», «500к», «323 000 рублей».
+
+    Телефон («66 44 55») и час («12») суммой не считаются.
+    """
+    match = _AMOUNT_ONLY.match(text)
+    if not match:
+        return None
+    number = float(re.sub(r"\s", "", match.group(1)) + (match.group(2) or "").replace(",", "."))
+    unit = (match.group(3) or "").lower()
+    if unit.startswith(("тыс", "т", "к", "k")):
+        number *= 1_000
+    elif unit.startswith(("млн", "милл")):
+        number *= 1_000_000
+    if number < 1_000:
+        return None
+    return clean_debt(round(number))

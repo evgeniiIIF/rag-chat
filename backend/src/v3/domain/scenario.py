@@ -30,9 +30,24 @@ STEP_QUERIES: dict[str, str] = {
 }
 
 
-def search_query(step: str, question: str) -> str:
+# на шаге info важно, какой именно фильтр провален: ищем то, что предложить вместо процедуры
+INFO_QUERIES: dict[str, str] = {
+    "debt": "сумма долга меньше 350 000 — что предложить клиенту вместо банкротства",
+    "region": "регион вне работы компании — что предложить клиенту вместо банкротства",
+}
+
+
+def info_query(profile: ClientProfile) -> str:
+    return INFO_QUERIES.get(profile.failed_filter() or "", STEP_QUERIES["info"])
+
+
+def search_query(step: str, question: str, profile: ClientProfile) -> str:
     """Поисковый запрос шага: вопрос клиента как есть, иначе — суть того, что делаем сейчас."""
-    return question.strip() if step == "rag" else STEP_QUERIES.get(step, question.strip())
+    if step == "rag":
+        return question.strip()
+    if step == "info":
+        return info_query(profile)
+    return STEP_QUERIES.get(step, question.strip())
 
 
 def next_step(profile: ClientProfile, kind: str) -> Step:
@@ -49,3 +64,15 @@ def next_step(profile: ClientProfile, kind: str) -> Step:
     if profile.phone is None or profile.consultation_time is None:
         return "invite"
     return "booked"
+
+
+def expected_slot(profile: ClientProfile) -> str | None:
+    """Что бот спросил на прошлом ходу, то клиент сейчас и ответил: debt | region | phone | time | None."""
+    step = next_step(profile, "situation")
+    if step == "ask_debt":
+        return "debt"
+    if step == "ask_region":
+        return "region"
+    if step == "invite":
+        return "phone" if profile.phone is None else "time"
+    return None

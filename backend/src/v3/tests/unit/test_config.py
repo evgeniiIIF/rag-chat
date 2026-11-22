@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import ValidationError
 
 from core.config import Settings
 
@@ -39,10 +39,3 @@ def test_settings_overrides_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.retriever_k == 5
     assert settings.score_threshold == 0.5
-
-
-def test_qualification_defaults_follow_document() -> None:
-    settings = Settings(api_key=SecretStr("test"))
-
-    assert settings.min_debt_rub == 350_000
-    assert settings.excluded_region_list == ("чечня", "днр", "лнр", "владимирская")

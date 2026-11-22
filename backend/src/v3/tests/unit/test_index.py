@@ -73,9 +73,37 @@ def test_hybrid_retriever_merges_channels_and_limits() -> None:
 
     hits = retriever.search("сумма", 2)
 
-    assert [hit.chunk.id for hit in hits] == ["doc.docx-0001", "doc.docx-0000"]
-    assert [hit.rank for hit in hits] == [1, 2]
+    # 0001 нашли оба канала (1.0), 0000 и 0002 — по одному (0.5): слабее лучшего почти вдвое
+    assert [hit.chunk.id for hit in hits] == ["doc.docx-0001"]
+    assert [hit.rank for hit in hits] == [1]
     assert all(0.0 <= hit.score <= 1.0 for hit in hits)
+
+
+def test_weak_chunks_are_cut_relative_to_the_best() -> None:
+    documents = {chunk.id: to_documents([chunk])[0] for chunk in map(make_chunk, range(4))}
+    ids = ["doc.docx-0000", "doc.docx-0001", "doc.docx-0002"]
+
+    def vector_search(question: str, limit: int) -> Sequence[Document]:
+        return [documents[doc_id] for doc_id in ids]
+
+    def keyword_search(question: str, limit: int) -> Sequence[Document]:
+        return [documents[ids[0]]]
+
+    hits = HybridRetriever(vector_search=vector_search, keyword_search=keyword_search).search("вопрос", 3)
+
+    assert [hit.chunk.id for hit in hits] == ["doc.docx-0000"]
+
+
+def test_channels_get_a_wider_candidate_pool() -> None:
+    limits: list[int] = []
+
+    def search(question: str, limit: int) -> Sequence[Document]:
+        limits.append(limit)
+        return []
+
+    HybridRetriever(vector_search=search, keyword_search=search).search("вопрос", 2)
+
+    assert limits == [6, 6]
 
 
 def test_hybrid_retriever_without_hits() -> None:

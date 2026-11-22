@@ -19,6 +19,10 @@ from domain.models import Chunk, RetrievedChunk
 
 COLLECTION_NAME = "chunks"
 RANK_CONST = 60
+# кандидатов берём с запасом: RRF-скор говорит о согласии каналов, а не о близости к вопросу
+CANDIDATE_FACTOR = 3
+# чанк слабее лучшего в SCORE_RATIO раз — уже не про этот вопрос
+SCORE_RATIO = 0.85
 DocSearch = Callable[[str, int], Sequence[Document]]
 
 
@@ -78,9 +82,14 @@ class HybridRetriever:
         self._keyword_search = keyword_search
 
     def search(self, question: str, k: int) -> list[RetrievedChunk]:
-        """Топ-k фрагментов с нормализованным скором и рангом."""
-        vector_docs = list(self._vector_search(question, k))
-        keyword_docs = list(self._keyword_search(question, k))
+        """Топ-k фрагментов с нормализованным скором и рангом.
+
+        Каналы отдают `k * CANDIDATE_FACTOR` кандидатов, после слияния остаются только чанки
+        не слабее `SCORE_RATIO` от лучшего: иначе в промпт попадают посторонние абзацы.
+        """
+        pool = k * CANDIDATE_FACTOR
+        vector_docs = list(self._vector_search(question, pool))
+        keyword_docs = list(self._keyword_search(question, pool))
         by_id: dict[str, Document] = {}
         for document in [*vector_docs, *keyword_docs]:
             by_id.setdefault(str(document.metadata["id"]), document)
@@ -89,9 +98,13 @@ class HybridRetriever:
             [str(document.metadata["id"]) for document in vector_docs],
             [str(document.metadata["id"]) for document in keyword_docs],
         ]
+        fused = rrf_fuse(rankings, limit=pool)
+        best = fused[0][1] if fused else 0.0
         return [
             RetrievedChunk(chunk=to_chunk(by_id[doc_id]), score=score, rank=rank)
-            for rank, (doc_id, score) in enumerate(rrf_fuse(rankings, limit=k), start=1)
+            for rank, (doc_id, score) in enumerate(
+                [item for item in fused if item[1] >= best * SCORE_RATIO][:k], start=1
+            )
         ]
 
 

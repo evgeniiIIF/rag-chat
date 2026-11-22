@@ -19,17 +19,17 @@ from pydantic import BaseModel, Field
 
 from core.behavior import (
     CONDENSE_SYSTEM_PROMPT,
-    FRAGMENTS_HEADER,
     HISTORY_TOKEN_BUDGET,
     INTAKE_SYSTEM_PROMPT,
-    MISSING_HINTS,
-    STAGE_INSTRUCTIONS,
-    SYSTEM_PROMPT,
+    build_system_prompt,
+    build_user_message,
+    filter_state_text,
+    profile_text,
 )
 from core.config import Settings
 from core.trace import model_name, record_call, record_output
 from domain.models import Chunk
-from domain.profile import ClientProfile, filter_state_text, profile_text
+from domain.profile import ClientProfile
 
 logger = logging.getLogger(__name__)
 
@@ -82,24 +82,6 @@ def _fragments(chunks: Sequence[Chunk]) -> str:
     return "\n\n".join(chunk.text for chunk in chunks)
 
 
-def _missing_hint(profile: ClientProfile) -> str:
-    missing = profile.missing_filter()
-    if missing is None:
-        return ""
-    return f" В конце задай один вопрос: {MISSING_HINTS[missing]}."
-
-
-def _offer_guard(profile: ClientProfile) -> str:
-    """Запись можно предлагать только тем, кто прошёл фильтры.
-
-    Фильтры собраны и не пройдены — запрет звучит на любом шаге, включая ответ на вопрос:
-    иначе модель снова позовёт на консультацию того, кому компания не помогает.
-    """
-    if profile.missing_filter() is not None or profile.filters_ok():
-        return ""
-    return " Клиент не проходит условия компании: не предлагай консультацию, звонок и не проси телефон."
-
-
 def trim_history(history: Sequence[BaseMessage]) -> list[BaseMessage]:
     """История в пределах бюджета токенов: свежие реплики важнее."""
     return trim_messages(
@@ -126,19 +108,13 @@ def build_prompt(
 ) -> Prompt:
     """Сообщения для модели на текущем шаге: роль + история + профиль + фрагменты + реплика."""
     fragments = _fragments(chunks)
-    # подсказку про недостающий фильтр добавляем только к ответу по вопросу:
-    # на шагах ask_debt/ask_region об этом уже говорит инструкция шага
-    hint = _missing_hint(profile) if step == "rag" else ""
-    system = SYSTEM_PROMPT + "\n\n" + STAGE_INSTRUCTIONS.get(step, "") + hint + _offer_guard(profile)
+    system = build_system_prompt(step, profile)
     kept = trim_history(history)
-    human_parts = [
-        f"Состояние фильтров: {filter_state_text(profile)}",
-        f"Что известно о клиенте: {profile_text(profile)}",
+    messages: list[BaseMessage] = [
+        SystemMessage(content=system),
+        *kept,
+        HumanMessage(content=build_user_message(question=question, profile=profile, fragments=fragments)),
     ]
-    if fragments:
-        human_parts.append(f"{FRAGMENTS_HEADER}\n{fragments}")
-    human_parts.append(f"Текущая реплика клиента: {question.strip()}")
-    messages: list[BaseMessage] = [SystemMessage(content=system), *kept, HumanMessage(content="\n\n".join(human_parts))]
     return Prompt(
         stage=step,
         system=system,
