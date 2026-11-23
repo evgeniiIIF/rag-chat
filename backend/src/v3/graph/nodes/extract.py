@@ -42,6 +42,11 @@ _DEBT_AROUND = re.compile(
 )
 # сумма внутри фразы: «рассрочку на 310к платить не могу» — клиент назвал цифру
 _AMOUNT_IN_TEXT = re.compile(r"(?i)(?:\d{1,3}(?:\s\d{3})+|\d+)\s*(?:тыс\w*|к\b|k\b|млн\w*|миллион\w*|руб\w*|р\.|₽)")
+# сумма привязана к другому обязательству: «рассрочку на 310к платить не могу» — не общий долг
+_SIDE_AMOUNT = re.compile(
+    r"(?i)(?:рассрочк\w*|кредит\w*|займ\w*|заём\w*|заем\w*|ипотек\w*|платёж\w*|платеж\w*|взнос\w*|залог\w*|штраф\w*)"
+    r"[^\d.!?]{0,20}\d"
+)
 _PURE_PHONE = re.compile(r"[\d\s\-+()]*\d[\d\s\-+()]*")
 _HOUR_ONLY = re.compile(r"\d{1,2}")
 # регион — короткое название, а не фраза-просьба: «консультацию давай» регионом не становится
@@ -128,11 +133,21 @@ def _debt_is_total(question: str, expected: str | None) -> bool:
     отказывает по сумме, которой клиент ещё не называл.
     """
     text = " ".join(question.split())
+    words = text.split()
+    # длинная реплика про другое обязательство («в целом с долгами справляюсь, но рассрочку
+    # на 310к платить не могу») — сумма не общая: бот должен уточнять общий долг дальше
+    if (
+        expected == "debt"
+        and len(words) > 4
+        and _SIDE_AMOUNT.search(text) is not None
+        and _DEBT_AROUND.search(text) is None
+    ):
+        return False
     return (
         parse_amount(text) is not None
         or _DEBT_AROUND.search(text) is not None
         or (expected == "debt" and _AMOUNT_IN_TEXT.search(text) is not None)
-        or (expected == "debt" and len(text.split()) <= 4)
+        or (expected == "debt" and len(words) <= 4)
     )
 
 

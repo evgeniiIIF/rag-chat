@@ -166,15 +166,16 @@ def test_internal_note_is_not_sent_to_client() -> None:
     assert text == "Подскажите, пожалуйста, удобное время для звонка."
 
 
-def test_installment_amount_is_the_total_debt_when_asked() -> None:
-    """Бот спросил сумму — «именно рассрочку на 310к платить уже не могу» это и есть ответ."""
+def test_installment_amount_is_not_the_total_debt_when_asked() -> None:
+    """Бот спросил сумму — «именно рассрочку на 310к платить уже не могу» это не общий долг."""
     profile = run(
         "я в целом с долгами справляюсь, но именно рассрочку на 310к платить уже не могу",
         IntakeDraft(kind="situation", debt_amount=310_000),
         ClientProfile(),
     )
 
-    assert profile.debt_amount == 310_000
+    assert profile.debt_amount is None
+    assert profile.failed_filter() is None
 
 
 def test_amount_named_as_debt_is_the_total_debt() -> None:

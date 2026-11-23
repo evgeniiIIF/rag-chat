@@ -104,16 +104,27 @@ def test_reply_words_do_not_overwrite_known_region() -> None:
     assert result["profile"].region == "чечня"
 
 
-def test_amount_in_a_phrase_counts_when_the_sum_was_asked() -> None:
-    """Бот спросил сумму — «рассрочку на 310к платить не могу» это и есть ответ."""
-    draft = _apply_expected(
-        ClientProfile(),
-        "рассрочку на 310к платить уже не могу",
-        IntakeDraft(kind="situation"),
-        expected="debt",
-    )
+def test_installment_in_a_phrase_is_not_the_total_debt() -> None:
+    """Бот спросил сумму — «в целом с долгами справляюсь, но рассрочку на 310к платить не могу»
 
-    assert draft.debt_amount == 310_000
+    это не общая сумма: слот остаётся пустым, бот уточняет общий долг, а не отказывает по 310к.
+    """
+    node = make_extract_node(FakeIntake(IntakeDraft(kind="situation", debt_amount=310_000)))
+    state = make_state("я в целом с долгами справляюсь, но именно рассрочку на 310к платить уже не могу")
+
+    result = node(state)
+
+    assert result["profile"].debt_amount is None
+    assert result["kind"] == "situation"
+
+
+def test_short_amount_reply_is_the_total_debt() -> None:
+    """Короткий ответ на вопрос о сумме — это и есть общий долг."""
+    node = make_extract_node(FakeIntake(IntakeDraft(kind="situation")))
+
+    result = node(make_state("310к", ClientProfile()))
+
+    assert result["profile"].debt_amount == 310_000
 
 
 def test_side_amount_is_not_the_total_debt() -> None:
