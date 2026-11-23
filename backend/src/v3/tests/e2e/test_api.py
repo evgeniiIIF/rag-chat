@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import BaseMessage
 from pydantic import SecretStr
 
 from core.config import Settings
 from domain.models import Chunk, RetrievedChunk
-from infrastructure.llm import IntakeDraft, Prompt
+from infrastructure.llm import AnswerDraft, IntakeDraft, Prompt
 from main import create_app
 from services.chat_service import ChatService
 from services.index_service import IndexService
@@ -42,11 +42,12 @@ def make_service(tmp_path: Path, *, score: float = 0.9) -> ChatService:
     def search(question: str, k: int) -> list[RetrievedChunk]:
         return [RetrievedChunk(chunk=make_chunk(), score=score, rank=1)]
 
-    def answer(prompt: Prompt) -> str:
-        return "От 350 000 рублей."
+    def answer(prompt: Prompt) -> AnswerDraft:
+        return AnswerDraft(summary="В процедуру берут с суммой от 350 000 ₽.")
 
-    def intake(question: str, history: list[Any]) -> IntakeDraft:
-        return IntakeDraft(kind="question")
+    def intake(question: str, history: Sequence[BaseMessage]) -> IntakeDraft:
+        # фильтры уже собраны: вопрос клиента уходит в ответ по знаниям, а не в сбор данных
+        return IntakeDraft(kind="question", debt_amount=800_000, region="Москва")
 
     return ChatService(make_settings(tmp_path), search=search, answer_fn=answer, intake=intake)
 
@@ -63,7 +64,7 @@ def test_chat_returns_frontend_contract(client: TestClient) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["answer"] == "От 350 000 рублей."
+    assert payload["answer"] == "В процедуру берут с суммой от **350 000 ₽**."
     assert payload["grounded"] is True
     assert payload["top_score"] == 0.9
     assert payload["sources"] == [
@@ -117,14 +118,14 @@ def test_lifespan_builds_service_from_index(monkeypatch: pytest.MonkeyPatch, tmp
         def search(self, question: str, k: int) -> list[RetrievedChunk]:
             return [RetrievedChunk(chunk=make_chunk(), score=0.9, rank=1)]
 
-    def fake_answer(prompt: Prompt) -> str:
-        return "От 350 000 рублей."
+    def fake_answer(prompt: Prompt) -> AnswerDraft:
+        return AnswerDraft(summary="В процедуру берут с суммой от 350 000 ₽.")
 
     monkeypatch.setattr("main.IndexService", FakeIndex)
     monkeypatch.setattr("main.build_answer_fn", lambda model: fake_answer)
 
-    def fake_intake(question: str, history: list[Any]) -> IntakeDraft:
-        return IntakeDraft(kind="question")
+    def fake_intake(question: str, history: Sequence[BaseMessage]) -> IntakeDraft:
+        return IntakeDraft(kind="question", debt_amount=800_000, region="Москва")
 
     monkeypatch.setattr("main.build_intake", lambda model: fake_intake)
     app = create_app(make_settings(tmp_path))

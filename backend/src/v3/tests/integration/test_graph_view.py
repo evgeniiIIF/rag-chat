@@ -9,7 +9,7 @@ from typing import Any, cast
 from api.graph import graph_mermaid, graph_page
 from domain.models import RetrievedChunk
 from graph.build import build_graph
-from infrastructure.llm import Prompt
+from infrastructure.llm import AnswerDraft, Prompt
 from services.chat_service import ChatService
 
 NODES = ("greet", "extract", "retrieve", "answer")
@@ -26,8 +26,8 @@ def make_graph(artifacts_dir: Path) -> Any:
     def search(question: str, k: int) -> list[RetrievedChunk]:
         return []
 
-    def answer(prompt: Prompt) -> str:
-        return "ок"
+    def answer(prompt: Prompt) -> AnswerDraft:
+        return AnswerDraft(summary="Ответ.")
 
     return build_graph(search=search, answer_fn=answer, threshold=0.35, artifacts_dir=artifacts_dir)
 

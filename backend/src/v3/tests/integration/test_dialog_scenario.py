@@ -13,7 +13,7 @@ from domain.graph_state import GraphState
 from domain.models import Chunk, RetrievedChunk
 from domain.profile import ClientProfile
 from graph.build import build_graph
-from infrastructure.llm import IntakeDraft, Prompt
+from infrastructure.llm import AnswerDraft, IntakeDraft, Prompt
 
 OPERATOR_TEXT = "ОБУЧЕНИЕ КЦ. Главная задача — продать клиенту юриста."
 
@@ -40,9 +40,9 @@ class FakeAnswer:
     def __init__(self) -> None:
         self.prompts: list[Prompt] = []
 
-    def __call__(self, prompt: Prompt) -> str:
+    def __call__(self, prompt: Prompt) -> AnswerDraft:
         self.prompts.append(prompt)
-        return f"ответ {prompt.stage}"
+        return AnswerDraft(summary=f"Ответ на шаге {prompt.stage}.")
 
 
 def make_graph(answer: FakeAnswer, tmp_path: Path) -> Any:

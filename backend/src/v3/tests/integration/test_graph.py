@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -14,7 +14,7 @@ from domain.models import Chunk, RetrievedChunk
 from domain.profile import ClientProfile
 from domain.scenario import INFO_QUERIES, STEP_QUERIES
 from graph.build import build_graph
-from infrastructure.llm import IntakeDraft, Prompt
+from infrastructure.llm import AnswerDraft, IntakeDraft, Prompt
 
 
 def make_chunk() -> Chunk:
@@ -44,9 +44,9 @@ class FakeAnswer:
     def __init__(self) -> None:
         self.prompts: list[Prompt] = []
 
-    def __call__(self, prompt: Prompt) -> str:
+    def __call__(self, prompt: Prompt) -> AnswerDraft:
         self.prompts.append(prompt)
-        return f"ответ:{prompt.stage}"
+        return AnswerDraft(summary=f"Ответ на шаге {prompt.stage}.")
 
 
 def make_graph(tmp_path: Path, intake: FakeIntake, answer: FakeAnswer, *, score: float = 0.9) -> Any:
@@ -71,7 +71,7 @@ def run(graph: Any, question: str, profile: ClientProfile | None = None) -> dict
         messages=[HumanMessage(content=question)],
         profile=profile or ClientProfile(),
     )
-    return graph.invoke(state, config={"configurable": {"thread_id": "t1"}})
+    return cast(dict[str, Any], graph.invoke(state, config={"configurable": {"thread_id": "t1"}}))
 
 
 def test_greeting_ends_the_turn(tmp_path: Path) -> None:
@@ -94,10 +94,10 @@ def test_graph_asks_debt_then_region(tmp_path: Path) -> None:
 
     assert result["step"] == "ask_region"
     assert result["profile"].debt_amount == 800_000
-    # контекст приходит на любом шаге, но запрос свой: «долг 800 тысяч» — плохой поисковый запрос
+    # знания нужны и на сборе данных: по ним бот объясняет, зачем спрашивает сумму и регион
     assert result["search_query"] == STEP_QUERIES["ask_region"]
     assert result["retrieved"] != []
-    assert result["grounded"] is False
+    assert result["grounded"] is True
 
 
 def test_passed_filters_invite_without_context(tmp_path: Path) -> None:
@@ -109,7 +109,7 @@ def test_passed_filters_invite_without_context(tmp_path: Path) -> None:
 
     assert result["step"] == "invite"
     assert result["retrieved"] != []
-    assert result["grounded"] is False
+    assert result["grounded"] is True
     assert "В конце задай один вопрос" not in answer.prompts[0].system
 
 
@@ -156,10 +156,10 @@ def test_booked_step_confirms(tmp_path: Path) -> None:
     graph = make_graph(tmp_path, FakeIntake({}), answer)
     profile = ClientProfile(debt_amount=800_000, region="Москва", phone="+79991234567", consultation_time="завтра")
 
-    result = run(graph, "спасибо", profile)
+    result = run(graph, "что подготовить?", profile)
 
     assert result["step"] == "booked"
-    assert result["answer"].lower() == "ответ:booked"
+    assert "Записал вас на консультацию" in result["answer"]
 
 
 def test_messages_are_appended_to_history(tmp_path: Path) -> None:

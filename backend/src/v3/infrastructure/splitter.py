@@ -1,7 +1,9 @@
-"""Разбиение документа на фрагменты: упаковка абзацев + RecursiveCharacterTextSplitter.
+"""Разбиение документа на фрагменты: один абзац — один фрагмент.
 
-Инварианты фрагмента задаёт `domain.models.Chunk`: id = `{source}-{order:04d}`,
-границы абзацев реальные (из исходного текста), текст непустой и не длиннее `chunk_size`.
+Документ размечен абзацами вручную, поэтому резать его по длине нельзя: фрагмент обрывается
+на середине мысли, и модель получает огрызок вместо знания. Инварианты фрагмента задаёт
+`domain.models.Chunk`: id = `{source}-{order:04d}`, номер абзаца настоящий, текст — абзац целиком.
+Список идёт вместе со своим заголовком: пункты без заголовка бессмысленны.
 """
 
 from __future__ import annotations
@@ -9,14 +11,12 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 from domain.models import Chunk
 from infrastructure.loader import LoadedDocument
 
 PARAGRAPH_SEP = re.compile(r"\n\s*\n")
 # версия алгоритма нарезки: попадает в манифест, поэтому смена логики сама инвалидирует индекс
-SPLITTER_VERSION = 2
+SPLITTER_VERSION = 3
 
 
 def chunk_id(source: str, order: int) -> str:
@@ -24,65 +24,55 @@ def chunk_id(source: str, order: int) -> str:
     return f"{source}-{order:04d}"
 
 
-class Splitter:
-    """Делит документ на фрагменты, сохраняя номера абзацев.
+def _is_list_item(text: str) -> bool:
+    """Пункт списка — короткая строка без заглавной буквы в начале.
 
-    Короткие абзацы пакуются вместе, пока влезают в `chunk_size`; абзац длиннее
-    `chunk_size` режется коробочным сплиттером (с перекрытием `chunk_overlap`).
+    «какие долги есть и перед кем;» и «есть ли аресты, приставы, суды, коллекторы.» — пункты,
+    а обычный абзац начинается с заглавной и заканчивается точкой: он остаётся отдельным фрагментом.
     """
+    if len(text) > 120:
+        return False
+    return text[:1].islower() or not text.endswith((".", "!", "?", "…"))
 
-    def __init__(self, *, chunk_size: int, chunk_overlap: int) -> None:
-        self._chunk_size = chunk_size
-        self._splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
+
+class Splitter:
+    """Абзац — фрагмент; заголовок с двоеточием забирает свои пункты."""
 
     def split(self, document: LoadedDocument) -> list[Chunk]:
-        """Фрагменты одного документа по порядку."""
+        """Фрагменты одного документа по порядку: только целые абзацы."""
         paragraphs = self._paragraphs(document.text)
         if not paragraphs:
             raise ValueError(f"документ не содержит текста: {document.source}")
-
         chunks: list[Chunk] = []
-        buffer: list[str] = []
-        start = 0
-        end = 0
-
-        for number, text in paragraphs:
-            if len(text) > self._chunk_size:
-                if buffer:
-                    chunks.append(self._chunk(document, len(chunks), start, end, "\n\n".join(buffer)))
-                    buffer = []
-                for piece in self._splitter.split_text(text):
-                    chunks.append(self._chunk(document, len(chunks), number, number, piece))
-                start = end = 0  # следующий буфер начинается заново, а не с абзаца прошлого фрагмента
-                continue
-
-            candidate = "\n\n".join([*buffer, text])
-            if buffer and len(candidate) > self._chunk_size:
-                chunks.append(self._chunk(document, len(chunks), start, end, "\n\n".join(buffer)))
-                buffer = [text]
-                start = end = number
-            else:
-                if not buffer:
-                    start = number
-                buffer.append(text)
-                end = number
-
-        if buffer:
-            chunks.append(self._chunk(document, len(chunks), start, end, "\n\n".join(buffer)))
+        for start, end, text in self._group_lists(paragraphs):
+            order = len(chunks)
+            chunks.append(
+                Chunk(
+                    id=chunk_id(document.source, order),
+                    source=document.source,
+                    order=order,
+                    paragraph_start=start,
+                    paragraph_end=end,
+                    text=text,
+                )
+            )
         return chunks
 
-    def _chunk(self, document: LoadedDocument, order: int, start: int, end: int, text: str) -> Chunk:
-        return Chunk(
-            id=chunk_id(document.source, order),
-            source=document.source,
-            order=order,
-            paragraph_start=start,
-            paragraph_end=end,
-            text=text,
-        )
+    @staticmethod
+    def _group_lists(paragraphs: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
+        """Абзац-заголовок с двоеточием забирает свои пункты: список без заголовка бессмыслен."""
+        grouped: list[tuple[int, int, str]] = []
+        index = 0
+        while index < len(paragraphs):
+            start, text = paragraphs[index]
+            index += 1
+            items = [text]
+            if text.endswith(":"):
+                while index < len(paragraphs) and _is_list_item(paragraphs[index][1]):
+                    items.append(paragraphs[index][1])
+                    index += 1
+            grouped.append((start, paragraphs[index - 1][0], "\n".join(items)))
+        return grouped
 
     @staticmethod
     def _paragraphs(text: str) -> list[tuple[int, str]]:
@@ -90,7 +80,7 @@ class Splitter:
         return [(number, part) for number, part in numbered if part]
 
 
-def split_documents(documents: Sequence[LoadedDocument], *, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
+def split_documents(documents: Sequence[LoadedDocument]) -> list[Chunk]:
     """Фрагменты по всем документам корпуса."""
-    splitter = Splitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    splitter = Splitter()
     return [chunk for document in documents for chunk in splitter.split(document)]

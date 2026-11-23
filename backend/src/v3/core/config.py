@@ -42,8 +42,6 @@ class Settings(BaseSettings):
     # читаемый снимок нарезки: пишется при сборке индекса, лежит рядом с документацией
     chunks_doc: Path = CHUNKS_DOC_DEFAULT
 
-    chunk_size: int = Field(default=500, ge=100, le=4000)
-    chunk_overlap: int = Field(default=100, ge=0, le=1000)
     retriever_k: int = Field(default=3, ge=1, le=10)
     score_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
 

@@ -1,4 +1,4 @@
-"""Приветствие: распознаётся правилом, отвечается готовым текстом (единственный хардкод)."""
+"""Соц-реплики: распознаются правилом, отвечаются готовым текстом из `core/behavior.py`."""
 
 from __future__ import annotations
 
@@ -38,6 +38,10 @@ _PHRASES: frozenset[str] = frozenset(
         "привет всем",
     }
 )
+_THANKS: frozenset[str] = frozenset({"спасибо", "спс", "благодарю", "пасибо", "thanks", "thank you"})
+_BYE: frozenset[str] = frozenset(
+    {"пока", "бай", "прощай", "досвидания", "до свидания", "всего доброго", "до встречи", "bye"}
+)
 _CLEAN = re.compile(r"[^a-zа-яё\s]+")
 
 
@@ -57,3 +61,15 @@ def is_greeting(text: str) -> bool:
         return False
     # «привет, у меня долг 500к» — не приветствие, а начало разговора по делу
     return len(words) <= 3
+
+
+def social_kind(text: str) -> str | None:
+    """Тип соц-реплики: greeting | thanks | bye, иначе None — разговор деловой."""
+    flat = _flat(text)
+    if not flat or len(flat.split()) > 4:
+        return None
+    if flat in _THANKS or flat in {"спасибо большое", "большое спасибо", "спасибо за ответ"}:
+        return "thanks"
+    if flat in _BYE or flat in {"ну пока", "ладно пока", "всем пока"}:
+        return "bye"
+    return "greeting" if is_greeting(text) else None

@@ -56,6 +56,12 @@ def test_case_tails_are_not_knowledge() -> None:
     assert knowledge_text("женщина, которая пыталась пройти МФЦ. Заявление вернули.") == ""
 
 
+def test_operator_voice_about_the_client_is_not_knowledge() -> None:
+    text = "Если клиент спрашивает про гарантии, объясняем, что гарантия про итоговое списание долгов."
+
+    assert knowledge_text(text) == ""
+
+
 def test_case_is_cut_but_rule_stays() -> None:
     text = "Внесудебное банкротство подходит не всем. У нас была женщина, которой вернули заявление."
 

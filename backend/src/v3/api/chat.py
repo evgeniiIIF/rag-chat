@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from schemas.chat import ChatRequest, ChatResponse
+from schemas.chat import ChatRequest, ChatResponse, HistoryResponse
 from services.chat_service import ChatService
 
 router = APIRouter(tags=["chat"])
@@ -32,6 +32,12 @@ ServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 def chat(payload: ChatRequest, service: ServiceDep) -> ChatResponse:
     """Ответ по документу или честный отказ."""
     return service.ask(payload)
+
+
+@router.get("/session/history", response_model=HistoryResponse)
+def history(session_id: str, service: ServiceDep) -> HistoryResponse:
+    """История диалога для новой вкладки: то, что уже лежит в чекпойнтере."""
+    return service.history(session_id)
 
 
 @router.post("/session/reset", status_code=status.HTTP_204_NO_CONTENT)

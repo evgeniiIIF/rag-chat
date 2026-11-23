@@ -21,6 +21,12 @@ class Turn(BaseModel):
     content: str = Field(min_length=1, max_length=QUESTION_MAX_LENGTH)
 
 
+class HistoryResponse(BaseModel):
+    """История сессии с сервера: новая вкладка поднимает диалог из чекпойнтера."""
+
+    messages: list[Turn] = Field(default_factory=list)
+
+
 class SourceSchema(BaseModel):
     """Фрагмент-источник в ответе."""
 
@@ -93,10 +99,40 @@ class StateSchema(BaseModel):
     llm: list[LlmCallSchema] = Field(default_factory=list)
 
 
+class BookingSchema(BaseModel):
+    """Подтверждённая запись на консультацию: рисуется зелёной плашкой."""
+
+    phone: str
+    date_time: str
+    is_confirmed: bool
+
+
+class FactSchema(BaseModel):
+    """Ключевой факт ответа: название и значение (сумма, срок, условие)."""
+
+    label: str
+    value: str
+
+
+class BlockSchema(BaseModel):
+    """Блок ответа для интерфейса: суть, ключевые факты, список, оговорка, вопрос."""
+
+    type: Literal["lead", "text", "facts", "list", "note", "question"]
+    text: str = ""
+    title: str = ""
+    items: list[str] = Field(default_factory=list)
+    facts: list[FactSchema] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     """Ответ чата: текст, источники, признак опоры на документ, лучший скор и стейт."""
 
     answer: str
+    # вопрос клиенту отдельным блоком и то, что уже известно: интерфейс размечает их плашками
+    question: str = ""
+    known: list[str] = Field(default_factory=list)
+    booking: BookingSchema | None = None
+    blocks: list[BlockSchema] = Field(default_factory=list)
     sources: list[SourceSchema]
     grounded: bool
     top_score: float = Field(ge=0.0, le=1.0)

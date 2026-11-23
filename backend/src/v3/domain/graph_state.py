@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -27,9 +27,16 @@ class GraphState(BaseModel):
     profile: ClientProfile = Field(default_factory=ClientProfile)
     kind: Literal["situation", "question"] = "situation"
 
-    # шаг и результат текущего хода
+    # шаг и результат текущего хода; previous_step — шаг прошлого хода (из чекпойнтера)
     step: str = ""
+    previous_step: str = ""
     search_query: str = ""
     retrieved: list[RetrievedChunk] = Field(default_factory=list)
     answer: str = ""
+    # вопрос клиенту отдельно от консультации: интерфейс показывает его плашкой
+    answer_question: str = ""
+    # подтверждённая запись: собирается из профиля, а не из ответа модели
+    answer_booking: dict[str, Any] | None = None
+    # ответ блоками для интерфейса: суть, факты, список, оговорка, вопрос
+    answer_blocks: list[dict[str, Any]] = Field(default_factory=list)
     grounded: bool = False

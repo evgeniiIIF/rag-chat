@@ -51,8 +51,27 @@ export const chatStateSchema = z.object({
   llm: z.array(llmCallSchema),
 });
 
+export const bookingSchema = z.object({
+  phone: z.string(),
+  date_time: z.string(),
+  is_confirmed: z.boolean(),
+});
+
+export const blockSchema = z.object({
+  type: z.enum(["lead", "text", "list", "note", "question"]),
+  text: z.string().default(""),
+  title: z.string().default(""),
+  items: z.array(z.string()).default([]),
+});
+
 export const chatResponseSchema = z.object({
   answer: z.string(),
+  // вопрос клиенту и уже известные данные: рисуем отдельными плашками
+  question: z.string().optional(),
+  known: z.array(z.string()).optional(),
+  booking: bookingSchema.nullish(),
+  // готовые блоки ответа с бэкенда: суть, список, оговорка, вопрос
+  blocks: z.array(blockSchema).default([]),
   sources: z.array(chatSourceSchema),
   grounded: z.boolean(),
   top_score: z.number().min(0).max(1),
@@ -60,6 +79,8 @@ export const chatResponseSchema = z.object({
 });
 
 export type ChatResponse = z.infer<typeof chatResponseSchema>;
+export type ChatBlock = z.infer<typeof blockSchema>;
+export type ConsultationBooking = z.infer<typeof bookingSchema>;
 export type ChatSource = z.infer<typeof chatSourceSchema>;
 export type ChatState = z.infer<typeof chatStateSchema>;
 export type ChatProfile = z.infer<typeof chatProfileSchema>;
@@ -73,6 +94,10 @@ export const chatTurnSchema = z.object({
 });
 
 export type ChatTurn = z.infer<typeof chatTurnSchema>;
+
+export const chatHistorySchema = z.object({ messages: z.array(chatTurnSchema) });
+
+export type ChatHistory = z.infer<typeof chatHistorySchema>;
 
 export const chatRequestSchema = z.object({
   question: z.string().min(1).max(2000),

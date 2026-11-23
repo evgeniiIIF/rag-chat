@@ -1,5 +1,11 @@
 import { httpClient } from "@/shared/api";
-import { chatResponseSchema, type ChatRequest, type ChatResponse } from "../types";
+import {
+  chatHistorySchema,
+  chatResponseSchema,
+  type ChatRequest,
+  type ChatResponse,
+  type ChatTurn,
+} from "../types";
 
 export async function postChat(payload: ChatRequest): Promise<ChatResponse> {
   const response = await httpClient.send(chatResponseSchema, {
@@ -7,9 +13,23 @@ export async function postChat(payload: ChatRequest): Promise<ChatResponse> {
     path: "/chat",
     body: payload,
   });
-  // в консоли — только сообщения, которые реально ушли в модель, ничего больше
-  for (const call of response.state.llm) {
-    console.log(call.messages);
-  }
+  logTurn(response);
   return response;
+}
+
+// одно сообщение консоли: состояние, чанки (из них собирается контекст) и все вызовы модели
+function logTurn(response: ChatResponse): void {
+  console.log({
+    state: response.state,
+    chunks: response.state.chunks,
+    llm: response.state.llm,
+  });
+}
+
+export async function getHistory(sessionId: string): Promise<ChatTurn[]> {
+  const response = await httpClient.send(chatHistorySchema, {
+    method: "GET",
+    path: `/session/history?session_id=${encodeURIComponent(sessionId)}`,
+  });
+  return response.messages;
 }

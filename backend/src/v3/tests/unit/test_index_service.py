@@ -22,13 +22,15 @@ def make_settings(tmp_path: Path) -> Settings:
         artifacts_dir=tmp_path / "artifacts",
         chroma_dir=tmp_path / "chroma",
         chunks_doc=tmp_path / "docs" / "chunks.md",
-        chunk_size=200,
-        chunk_overlap=0,
     )
 
 
 def make_document(sha: str = "a" * 64) -> LoadedDocument:
-    return LoadedDocument(source="doc.docx", text="Текст документа.", sha256=sha)
+    return LoadedDocument(
+        source="doc.docx",
+        text="В процедуру берут с суммой от 350 000 рублей, если общий долг больше порога.",
+        sha256=sha,
+    )
 
 
 class FakeRetriever:
@@ -52,8 +54,7 @@ def make_service(tmp_path: Path, documents: list[LoadedDocument], factory: FakeI
     def loader(data_dir: Path) -> list[LoadedDocument]:
         return documents
 
-    def split(docs: list[LoadedDocument], *, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
-        assert chunk_size == 200
+    def split(docs: list[LoadedDocument]) -> list[Chunk]:
         return [
             Chunk(
                 id=chunk_id(document.source, order),
@@ -69,7 +70,7 @@ def make_service(tmp_path: Path, documents: list[LoadedDocument], factory: FakeI
     return IndexService(
         make_settings(tmp_path),
         loader=loader,
-        split=split,  # type: ignore[arg-type]
+        split=split,
         index_factory=factory,  # type: ignore[arg-type]
     )
 
@@ -131,9 +132,8 @@ def test_search_requires_index(tmp_path: Path) -> None:
 def test_build_manifest_contains_settings(tmp_path: Path) -> None:
     manifest = build_manifest([make_document()], make_settings(tmp_path))
 
-    assert manifest["chunk_size"] == 200
-    assert manifest["chunk_overlap"] == 0
-    assert manifest["splitter_version"] == 2
+    assert manifest["chunking"] == "paragraph"
+    assert manifest["splitter_version"] == 3
     assert manifest["documents"] == [{"source": "doc.docx", "sha256": "a" * 64}]
 
 

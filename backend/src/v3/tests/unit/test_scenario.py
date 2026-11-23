@@ -7,7 +7,10 @@ from domain.scenario import CONTEXT_STEPS, INFO_QUERIES, STEP_QUERIES, next_step
 
 
 def test_question_goes_to_context_answer() -> None:
-    assert next_step(ClientProfile(), "question") == "rag"
+    # обязательные фильтры важнее: пока сумма и регион не собраны, вопрос ждёт
+    assert next_step(ClientProfile(), "question") == "ask_debt"
+    qualified = ClientProfile(debt_amount=800_000, region="Москва")
+    assert next_step(qualified, "question") == "rag"
     assert "rag" in CONTEXT_STEPS
 
 
@@ -56,4 +59,4 @@ def test_info_query_depends_on_the_failed_filter() -> None:
     # на info ищем то, что предложить вместо процедуры, и только по проваленному фильтру
     assert search_query("info", "320 тысяч", ClientProfile(debt_amount=320_000)) == INFO_QUERIES["debt"]
     assert search_query("info", "Чечня", ClientProfile(region="Чечня")) == INFO_QUERIES["region"]
-    assert search_query("info", "ну и что", ClientProfile()) == STEP_QUERIES["info"]
+    assert search_query("info", "ну и что", ClientProfile()) == "ну и что"

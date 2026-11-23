@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect, useLayoutEffect } from "react";
-import { useChat, getSessionId, resetSessionId, type ChatResponse } from "@/features/chat";
+import { useChat, useHistory, getSessionId, resetSessionId, type ChatResponse } from "@/features/chat";
 import { UIInput } from "@/shared/ui";
 import { ChatMessageList } from "@/components/ChatMessageList";
 
@@ -18,7 +18,21 @@ export function ChatPage(): JSX.Element {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { mutateAsync, isPending } = useChat();
+  const { mutateAsync: sendTurn, isPending } = useChat();
+  const sessionId = getSessionId();
+  const { data: history } = useHistory(sessionId);
+  // история восстанавливается один раз на сессию: сервер — единственный её владелец
+  const seededFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (history === undefined || seededFor.current === sessionId) return;
+    seededFor.current = sessionId;
+    setMessages((prev) =>
+      prev.length > 0
+        ? prev
+        : history.map((turn, index) => ({ id: `h${String(index)}`, role: turn.role, text: turn.content })),
+    );
+  }, [history, sessionId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -38,10 +52,13 @@ export function ChatPage(): JSX.Element {
     setDraft("");
     inputRef.current?.focus({ preventScroll: true });
     setMessages((prev) => [...prev, { id: nextId(), role: "user", text: q }]);
+    const history = messages.slice(-30).map((m) => ({ role: m.role, content: m.text }));
     try {
-      const history = messages.slice(-30).map((m) => ({ role: m.role, content: m.text }));
-      const response = await mutateAsync({ question: q, history, session_id: getSessionId() });
-      setMessages((prev) => [...prev, { id: nextId(), role: "assistant", text: response.answer, response }]);
+      const response = await sendTurn({ question: q, history, session_id: getSessionId() });
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: "assistant", text: response.answer, response },
+      ]);
     } catch {
       setMessages((prev) => [...prev, { id: nextId(), role: "assistant", text: "Ошибка сети. Попробуйте еще раз." }]);
     }
@@ -74,7 +91,7 @@ export function ChatPage(): JSX.Element {
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            onClick={clearChat}
+            onClick={() => void clearChat()}
             className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-slate-600 hover:bg-slate-700/60 hover:text-white"
             title="Начать новый диалог (история на сервере очистится)"
           >

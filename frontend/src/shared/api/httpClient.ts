@@ -18,7 +18,9 @@ export class HttpClient {
     this.interceptors = interceptors;
   }
 
-  async send<T>(schema: z.ZodType<T>, req: HttpRequest): Promise<T> {
+  // третий параметр — unknown: у схем с .default() входной тип шире выходного,
+  // иначе send() возвращал бы входной тип вместо разобранного ChatResponse
+  async send<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, req: HttpRequest): Promise<T> {
     const prepared = await this.applyInterceptors(req);
     const response = await fetch(`${this.base}${prepared.path}`, {
       method: prepared.method,

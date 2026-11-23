@@ -11,9 +11,7 @@ const STORAGE_KEY = "rag_chat_session_id";
 let memoryFallback: string | null = null;
 
 function createId(): string {
-  const cryptoRandom = globalThis.crypto?.randomUUID?.();
-  if (cryptoRandom !== undefined) return cryptoRandom;
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return globalThis.crypto.randomUUID();
 }
 
 export function getSessionId(): string {

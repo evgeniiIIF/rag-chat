@@ -12,7 +12,7 @@ from pydantic import SecretStr
 from core.config import Settings
 from domain.models import Chunk, RetrievedChunk
 from infrastructure.artifacts import read_json
-from infrastructure.llm import IntakeDraft
+from infrastructure.llm import AnswerDraft, IntakeDraft
 from schemas.chat import ChatRequest
 from services.chat_service import ChatService
 
@@ -52,10 +52,10 @@ class FakeAnswer:
         self.stages: list[str] = []
         self.prompts: list[Any] = []
 
-    def __call__(self, prompt: Any) -> str:
+    def __call__(self, prompt: Any) -> AnswerDraft:
         self.stages.append(prompt.stage)
         self.prompts.append(prompt)
-        return f"ответ:{prompt.stage}"
+        return AnswerDraft(summary=f"Ответ на шаге {prompt.stage}.")
 
 
 def make_service(tmp_path: Path, *, score: float = 0.9) -> tuple[ChatService, FakeIntake, FakeAnswer]:
@@ -103,14 +103,16 @@ def test_filters_are_collected_step_by_step(tmp_path: Path) -> None:
 
 def test_question_uses_document_fragments(tmp_path: Path) -> None:
     service, intake, answer = make_service(tmp_path)
+    intake.answers["долг 800 тысяч, Москва"] = IntakeDraft(kind="situation", debt_amount=800_000, region="Москва")
     intake.answers["с какой суммой берут?"] = IntakeDraft(kind="question")
+    service.ask(ChatRequest(question="долг 800 тысяч, Москва", session_id="s3"))
 
     response = service.ask(ChatRequest(question="с какой суммой берут?", session_id="s3"))
 
     assert response.state.step == "rag"
     assert response.grounded is True
     assert response.state.retrieved == 1
-    human = str(answer.prompts[0].messages[-1].content)
+    human = str(answer.prompts[-1].messages[-1].content)
     assert "350 000" in human
     assert "doc.docx" not in human  # модель не видит адресов источника
     assert response.sources[0].source == "doc.docx"
@@ -118,7 +120,9 @@ def test_question_uses_document_fragments(tmp_path: Path) -> None:
 
 def test_weak_fragments_are_dropped(tmp_path: Path) -> None:
     service, intake, _ = make_service(tmp_path, score=0.1)
+    intake.answers["долг 800 тысяч, Москва"] = IntakeDraft(kind="situation", debt_amount=800_000, region="Москва")
     intake.answers["с какой суммой берут?"] = IntakeDraft(kind="question")
+    service.ask(ChatRequest(question="долг 800 тысяч, Москва", session_id="s4"))
 
     response = service.ask(ChatRequest(question="с какой суммой берут?", session_id="s4"))
 
@@ -128,12 +132,14 @@ def test_weak_fragments_are_dropped(tmp_path: Path) -> None:
 
 def test_artifacts_written_per_request(tmp_path: Path) -> None:
     service, intake, _ = make_service(tmp_path)
+    intake.answers["долг 800 тысяч, Москва"] = IntakeDraft(kind="situation", debt_amount=800_000, region="Москва")
     intake.answers["с какой суммой берут?"] = IntakeDraft(kind="question")
-
+    service.ask(ChatRequest(question="долг 800 тысяч, Москва", session_id="s5"))
     service.ask(ChatRequest(question="с какой суммой берут?", session_id="s5"))
 
     artifact_dirs = [path for path in (tmp_path / "artifacts").iterdir() if path.is_dir()]
-    names = {path.name for path in artifact_dirs[0].iterdir()}
+    names = {item.name for path in artifact_dirs for item in path.iterdir()}
     assert {"retrieved.json", "answer_rag.json", "llm.json"} <= names
-    trace = read_json(artifact_dirs[0] / "llm.json")
+    trace_dir = next(path for path in artifact_dirs if (path / "answer_rag.json").exists())
+    trace = read_json(trace_dir / "llm.json")
     assert trace

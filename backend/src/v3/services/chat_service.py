@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from core.behavior import FALLBACK_ANSWER
 from core.config import Settings
 from core.trace import LlmTrace, capture
 from domain.graph_state import GraphState
@@ -20,9 +21,13 @@ from graph.nodes.retrieve import SearchFn
 from infrastructure.artifacts import write_json
 from infrastructure.llm import AnswerFn, CondenseFn, IntakeFn
 from schemas.chat import (
+    QUESTION_MAX_LENGTH,
+    BlockSchema,
+    BookingSchema,
     ChatRequest,
     ChatResponse,
     ChunkSchema,
+    HistoryResponse,
     LlmCallSchema,
     LlmMessageSchema,
     ProfileSchema,
@@ -30,8 +35,6 @@ from schemas.chat import (
     StateSchema,
     Turn,
 )
-
-FALLBACK_ANSWER = "Извините, на моей стороне что-то пошло не так. Давайте попробуем ещё раз."
 
 
 class ChatService:
@@ -88,35 +91,58 @@ class ChatService:
         self._conn.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
         self._conn.commit()
 
-    def _restore(self, config: dict[str, Any], history: list[Turn]) -> tuple[list[BaseMessage], ClientProfile]:
-        """История и профиль из чекпойнтера; если его нет — из запроса (после рестарта сервиса)."""
+    def history(self, session_id: str) -> HistoryResponse:
+        """Реплики сессии из чекпойнтера — единственный источник истории для фронтенда."""
+        config: dict[str, Any] = {"configurable": {"thread_id": session_id}}
+        stored = self._graph.get_state(config).values
+        messages = [
+            Turn(
+                role="user" if message.type == "human" else "assistant",
+                content=str(message.content)[:QUESTION_MAX_LENGTH],
+            )
+            for message in stored.get("messages") or []
+            if message.type in {"human", "ai"} and str(message.content).strip()
+        ]
+        return HistoryResponse(messages=messages)
+
+    def _restore(self, config: dict[str, Any], history: list[Turn]) -> tuple[list[BaseMessage], ClientProfile, str]:
+        """История, профиль и шаг прошлого хода из чекпойнтера; если его нет — из запроса."""
         stored = self._graph.get_state(config).values
         profile = stored.get("profile")
         known = profile if isinstance(profile, ClientProfile) else ClientProfile()
+        previous_step = stored.get("step") if isinstance(stored.get("step"), str) else ""
         if stored.get("messages"):
-            return [], known
+            return [], known, previous_step
         messages: list[BaseMessage] = [
             HumanMessage(content=turn.content) if turn.role == "user" else AIMessage(content=turn.content)
             for turn in history
         ]
-        return messages, known
+        return messages, known, previous_step
 
-    def ask(self, request: ChatRequest) -> ChatResponse:
+    def _prepare(self, request: ChatRequest) -> tuple[str, GraphState, dict[str, Any]]:
+        """Идентификатор хода, стартовое состояние графа и конфиг потока (thread_id сессии)."""
         request_id = uuid4().hex[:12]
         config: dict[str, Any] = {"configurable": {"thread_id": request.session_id or request_id}}
-
-        restored_messages, restored_profile = self._restore(config, request.history)
+        restored_messages, restored_profile, previous_step = self._restore(config, request.history)
         state = GraphState(
             request_id=request_id,
             question=request.question,
             messages=[*restored_messages, HumanMessage(content=request.question)],
             profile=restored_profile,
+            previous_step=previous_step,
             k=request.k or self._settings.retriever_k,
         )
+        return request_id, state, config
+
+    def ask(self, request: ChatRequest) -> ChatResponse:
+        request_id, state, config = self._prepare(request)
         trace = LlmTrace()
         with capture(trace):
             result = self._graph.invoke(state, config=config)
+        return self._response(request_id, result, trace)
 
+    def _response(self, request_id: str, result: dict[str, Any], trace: LlmTrace) -> ChatResponse:
+        """Контракт фронтенда: текст, источники, скор и состояние с вызовами модели."""
         retrieved = result.get("retrieved") or []
         profile = result.get("profile")
         this_profile = profile if isinstance(profile, ClientProfile) else ClientProfile()
@@ -129,6 +155,10 @@ class ChatService:
         top_score = max((hit.score for hit in retrieved), default=0.0)
         return ChatResponse(
             answer=result.get("answer") or FALLBACK_ANSWER,
+            question=result.get("answer_question") or "",
+            known=[],  # осознанно скрыто: клиент видит только ответ и плашки записи
+            booking=BookingSchema(**result["answer_booking"]) if result.get("answer_booking") else None,
+            blocks=[BlockSchema(**block) for block in result.get("answer_blocks") or []],
             sources=[
                 SourceSchema(
                     source=hit.chunk.source,

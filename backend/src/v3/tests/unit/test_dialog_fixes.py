@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 from langchain_core.messages import BaseMessage
 
-from core.formatting import enforce_style
+from core.formatting import answer_text, build_blocks, enforce_style
 from domain.graph_state import GraphState
+from domain.models import RetrievedChunk
 from domain.profile import ClientProfile, extract_phone, extract_time, is_excluded_region, normalize_phone
 from domain.scenario import expected_slot
 from graph.nodes.extract import make_extract_node
+from graph.nodes.retrieve import make_retrieve_node
 from infrastructure.llm import IntakeDraft
 
 QUALIFIED = ClientProfile(debt_amount=899_000, region="Дагестан")
@@ -25,7 +28,8 @@ class FakeIntake:
 
 
 def run(question: str, draft: IntakeDraft, profile: ClientProfile) -> ClientProfile:
-    return make_extract_node(FakeIntake(draft))(GraphState(question=question, profile=profile))["profile"]
+    state = make_extract_node(FakeIntake(draft))(GraphState(question=question, profile=profile))
+    return cast(ClientProfile, state["profile"])
 
 
 def test_excluded_regions_in_any_case_form() -> None:
@@ -45,10 +49,8 @@ def test_phone_accepts_6_10_and_11_digits() -> None:
 
 
 def test_extract_phone_from_text() -> None:
-    assert extract_phone("66 44 55 завтра в 12") == "66-44-55"
     assert extract_phone("мой номер 89991234567 в 12:00") == "+79991234567"
-    assert extract_phone("664455") is None
-    assert extract_phone("664455", allow_bare_short=True) == "66-44-55"
+    assert extract_phone("66 44 55 завтра в 12") is None  # короткий номер — только в ответ на вопрос
 
 
 def test_time_with_day_and_hour() -> None:
@@ -116,7 +118,7 @@ def test_slot_duplicates_are_dropped_from_facts() -> None:
 def test_stories_are_removed() -> None:
     text = "Понял вас. Знаю случай, когда женщина не прошла МФЦ. Вам подойдёт рассрочка."
 
-    assert enforce_style(text, "info") == "Понял вас. Вам подойдёт рассрочка."
+    assert enforce_style(text, "info") == "Вам подойдёт рассрочка."
 
 
 def test_info_has_no_questions() -> None:
@@ -124,10 +126,86 @@ def test_info_has_no_questions() -> None:
 
 
 def test_collecting_step_keeps_ack_and_question() -> None:
-    assert enforce_style("Понял. Это важно. Какая сумма долга?", "ask_debt") == "Понял. Какая сумма долга?"
+    assert enforce_style("Понял. Это важно. Какая сумма долга?", "ask_debt") == "Какая сумма долга?"
 
 
 def test_long_answer_is_cut_but_final_question_stays() -> None:
     text = "Раз. Два. Три. Четыре. Пять. Назовите телефон?"
 
-    assert enforce_style(text, "invite") == "Раз. Два. Три. Назовите телефон?"
+    assert enforce_style(text, "invite") == "Назовите телефон?"
+
+
+def test_internal_note_is_not_sent_to_client() -> None:
+    text = answer_text(
+        "Клиент настаивает на консультации, фильтры пройдены.",
+        [],
+        "",
+        "invite",
+        ask="Подскажите, пожалуйста, удобное время для звонка.",
+    )
+
+    assert text == "Подскажите, пожалуйста, удобное время для звонка."
+
+
+def test_installment_amount_is_not_the_total_debt() -> None:
+    profile = run(
+        "я в целом с долгами справляюсь, но именно рассрочку на 310к платить уже не могу",
+        IntakeDraft(kind="situation", debt_amount=310_000),
+        ClientProfile(),
+    )
+
+    assert profile.debt_amount is None
+
+
+def test_amount_named_as_debt_is_the_total_debt() -> None:
+    profile = run("500к сумма", IntakeDraft(kind="situation", debt_amount=500_000), ClientProfile())
+
+    assert profile.debt_amount == 500_000
+
+
+def test_search_is_skipped_when_knowledge_is_not_needed() -> None:
+    calls: list[str] = []
+
+    def search(query: str, k: int) -> list[RetrievedChunk]:
+        calls.append(query)
+        return []
+
+    node = make_retrieve_node(search, lambda question, history: question, 0.1)
+    client = QUALIFIED.model_copy(update={"phone": "+79991234567", "consultation_time": "12:00"})
+
+    node(GraphState(question="завтра в 12", profile=client))
+    assert calls == []
+
+    node(GraphState(question="какие сроки?", profile=QUALIFIED, kind="question"))
+    assert calls
+
+
+def test_time_named_as_a_number_is_normalized() -> None:
+    profile = run("554433 в 10", IntakeDraft(kind="situation", phone="554433", consultation_time="10"), ClientProfile())
+
+    assert profile.consultation_time == "10:00"
+    assert profile.phone == "55-44-33"
+
+
+def test_mirrored_facts_collapse_to_one() -> None:
+    profile = run(
+        "просрочка",
+        IntakeDraft(kind="situation", facts={"просрочка": "не может платить рассрочку"}),
+        ClientProfile(facts={"не справляется с платежами по рассрочке": "просрочка"}),
+    )
+
+    assert profile.facts == {"просрочка": "не может платить рассрочку"}
+
+
+def test_unknown_slot_note_is_not_shown_to_client() -> None:
+    text = answer_text("Регион пока неизвестен.", [], "", "ask_region")
+
+    assert text == ""
+
+
+def test_blocks_do_not_show_where_the_answer_came_from() -> None:
+    blocks = build_blocks("Мы берём в процедуру долги от 350 000 ₽.", "", "Какая у вас общая сумма долга?")
+
+    assert [block["type"] for block in blocks] == ["lead", "question"]
+    assert "контекст" not in str(blocks).lower()
+    assert "источник" not in str(blocks).lower()

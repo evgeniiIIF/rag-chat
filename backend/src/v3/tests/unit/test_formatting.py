@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from core.formatting import normalize_answer, strip_source_refs
+from core.formatting import answer_text, enforce_style, normalize_answer, strip_source_refs
+from domain.profile import ClientProfile
 
 
 def test_inline_bullets_are_split_into_lines() -> None:
@@ -44,3 +45,35 @@ def test_plain_answer_keeps_its_text() -> None:
 
     assert strip_source_refs(text) == text
     assert normalize_answer(text) == text
+
+
+def test_internal_notes_are_not_shown_to_client() -> None:
+    assert enforce_style("Клиент настаивает на консультации, фильтры пройдены.") == ""
+    assert enforce_style("Состояние фильтров: всё подходит.") == ""
+    assert enforce_style("Что известно о клиенте: долг 500 000 ₽.") == ""
+    assert enforce_style("Регион пока неизвестен.") == ""
+    assert enforce_style("Сумма долга пока неизвестна.") == ""
+    text = answer_text(
+        "Клиент настаивает на консультации, фильтры пройдены.",
+        [],
+        "",
+        "invite",
+        ask="Напишите, пожалуйста, ваш телефон и удобное время для звонка.",
+    )
+    assert text == "Напишите, пожалуйста, ваш телефон и удобное время для звонка."
+
+
+def test_step_question_is_not_repeated() -> None:
+    question = "Подскажите, пожалуйста, в каком регионе вы прописаны?"
+
+    assert answer_text(question, [], "", "ask_region", ask=question) == question
+
+
+def test_booking_text_reads_naturally() -> None:
+    profile = ClientProfile(phone="+79991234567", consultation_time="завтра 12:00")
+
+    text = answer_text("", [], "", "booked", profile)
+
+    assert "юрист позвонит на" in text
+    assert "+79991234567" in text
+    assert "время — завтра" in text

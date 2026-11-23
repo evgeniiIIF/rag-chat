@@ -18,6 +18,9 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from core.behavior import (
+    ANSWER_POINTS_HINT,
+    ANSWER_QUESTION_HINT,
+    ANSWER_SUMMARY_HINT,
     CONDENSE_SYSTEM_PROMPT,
     HISTORY_TOKEN_BUDGET,
     INTAKE_SYSTEM_PROMPT,
@@ -27,6 +30,7 @@ from core.behavior import (
     profile_text,
 )
 from core.config import Settings
+from core.formatting import parse_reply
 from core.trace import model_name, record_call, record_output
 from domain.models import Chunk
 from domain.profile import ClientProfile
@@ -36,7 +40,7 @@ logger = logging.getLogger(__name__)
 type StepName = Literal["ask_debt", "ask_region", "info", "invite", "booked", "rag"]
 type IntakeFn = Callable[[str, Sequence[BaseMessage]], "IntakeDraft"]
 type CondenseFn = Callable[[str, Sequence[BaseMessage]], str]
-type AnswerFn = Callable[["Prompt"], str]
+type AnswerFn = Callable[["Prompt"], "AnswerDraft"]
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,17 @@ class Prompt:
             "inputs": self.inputs,
             "messages": [_message(message) for message in self.messages],
         }
+
+
+class AnswerDraft(BaseModel):
+    """Ответ клиенту: одно поле с готовым текстом. Плана, заметок и списков в схеме нет.
+
+    Раньше их приходилось отфильтровывать из трёх полей, и служебные фразы («Ничего не гарантировать
+    и не обещать списание») доходили до клиента. Один текст + вопрос — клиенту нечего чистить.
+    """
+
+    summary: str = Field(default="", description=ANSWER_SUMMARY_HINT)
+    question: str = Field(default="", description=ANSWER_QUESTION_HINT)
 
 
 class IntakeDraft(BaseModel):
@@ -105,15 +120,19 @@ def build_prompt(
     question: str,
     chunks: Sequence[Chunk] = (),
     history: Sequence[BaseMessage] = (),
+    ask: str = "",
+    short: bool = False,
 ) -> Prompt:
-    """Сообщения для модели на текущем шаге: роль + история + профиль + фрагменты + реплика."""
+    """Сообщения для модели на текущем шаге: роль + история + профиль + фрагменты + вопрос шага."""
     fragments = _fragments(chunks)
     system = build_system_prompt(step, profile)
     kept = trim_history(history)
     messages: list[BaseMessage] = [
         SystemMessage(content=system),
         *kept,
-        HumanMessage(content=build_user_message(question=question, profile=profile, fragments=fragments)),
+        HumanMessage(
+            content=build_user_message(question=question, profile=profile, fragments=fragments, ask=ask, short=short),
+        ),
     ]
     return Prompt(
         stage=step,
@@ -124,6 +143,7 @@ def build_prompt(
             "состояние фильтров": filter_state_text(profile),
             "профиль": profile_text(profile),
             "фрагменты": fragments,
+            "вопрос шага": ask,
             "реплика клиента": question.strip(),
             "история": _history_note(len(history), len(kept)),
         },
@@ -146,10 +166,23 @@ def build_chat_model(settings: Settings, max_tokens: int | None = None) -> BaseC
     )
 
 
-def build_answer_fn(model: BaseChatModel) -> AnswerFn:
-    """Функция «промпт шага → текст ответа» с записью в трейс."""
+def _draft_from_text(model: BaseChatModel, prompt: Prompt) -> AnswerDraft:
+    """Запасной путь: модель ответила текстом — раскладываем его по полям сами."""
+    try:
+        content = model.invoke(prompt.messages).content
+    except Exception:
+        logger.exception("модель не ответила на шаге %s", prompt.stage)
+        return AnswerDraft()
+    text = content if isinstance(content, str) else ""
+    summary, points, question = parse_reply(text)
+    return AnswerDraft(summary=" ".join(part for part in [summary, *points] if part.strip()), question=question)
 
-    def answer(prompt: Prompt) -> str:
+
+def build_answer_fn(model: BaseChatModel) -> AnswerFn:
+    """Функция «промпт шага → поля ответа»: поля схемы с подсказками из промпт-файла."""
+    structured = model.with_structured_output(AnswerDraft)
+
+    def answer(prompt: Prompt) -> AnswerDraft:
         call = record_call(
             f"answer:{prompt.stage}",
             model_name(model),
@@ -160,14 +193,13 @@ def build_answer_fn(model: BaseChatModel) -> AnswerFn:
             inputs=prompt.inputs,
         )
         try:
-            text = model.invoke(prompt.messages).content
+            draft = cast(AnswerDraft, structured.invoke(prompt.messages))
         except Exception:
-            logger.exception("модель не ответила на шаге %s", prompt.stage)
-            record_output(call, "ошибка модели")
-            raise
-        reply = text.strip() if isinstance(text, str) else str(text).strip()
-        record_output(call, reply)
-        return reply
+            # провайдер иногда отвечает обычным текстом вместо JSON: разбираем его сами
+            logger.warning("схема не разобралась на шаге %s, беру текст ответа", prompt.stage)
+            draft = _draft_from_text(model, prompt)
+        record_output(call, draft.model_dump_json())
+        return draft
 
     return answer
 

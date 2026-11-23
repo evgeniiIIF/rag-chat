@@ -111,55 +111,83 @@ def clean_region(value: str | None) -> str | None:
     return flat
 
 
+# одно и то же под разными именами: модель то «цель», то «goal»
+_FACT_ALIASES: dict[str, str] = {
+    "goal": "цель",
+    "задача": "цель",
+    "проблема": "цель",
+    "запрос": "цель",
+    "current_obligations": "обязательства",
+    "обязательства": "обязательства",
+    "enforcement_proceeding": "исполнительное производство",
+    "enforcement_proceedings": "исполнительное производство",
+    "исполнительное производство": "исполнительное производство",
+}
+
+
+def _stems(text: str) -> set[str]:
+    """Грубые основы слов: «рассрочка/рассрочкой» — одно и то же."""
+    return {word[:5] for word in re.findall(r"\w+", text.casefold()) if len(word) > 3}
+
+
+def _same_fact(one: str, other: str) -> bool:
+    """Один и тот же факт разными словами: больше половины основ совпало."""
+    left, right = _stems(one), _stems(other)
+    return bool(left and right) and len(left & right) / len(left | right) >= 0.5
+
+
 def merge_facts(old: dict[str, str], new: dict[str, str]) -> dict[str, str]:
     """Слить факты о клиенте: свежие значения заменяют старые, повторы по смыслу и заглушки уходят."""
     merged = {str(key).strip(): str(value).strip() for key, value in old.items()}
     for key, value in new.items():
-        clean_key, clean_value = str(key).strip(), str(value).strip()
+        clean_key = _FACT_ALIASES.get(str(key).strip().casefold(), str(key).strip())
+        clean_value = str(value).strip()
         if not clean_key or clean_value.lower().strip(".") in _EMPTY_FACTS:
             continue
-        # тот же факт под другим именем (долг/debts, цель/goal): старое имя уходит, значение свежее
-        for stale in [k for k, v in merged.items() if v.lower() == clean_value.lower() and k != clean_key]:
+        # тот же факт под другим именем (долг/debts, цель/goal): старое имя уходит, значение свежее;
+        # зеркальная запись («просрочка: не может платить» после «не справляется: просрочка») тоже уходит
+        for stale in [
+            k
+            for k, v in merged.items()
+            if k != clean_key and (_same_fact(v, clean_value) or _same_fact(k, clean_value) or _same_fact(v, clean_key))
+        ]:
             merged.pop(stale)
         merged[clean_key] = clean_value
     return dict(list(merged.items())[-MAX_FACTS:])
 
 
-_PHONE_SHORT = re.compile(r"(?<![\d:.])\d{2}[\s\-]\d{2}[\s\-]\d{2}(?![\d:.])(?!\s*(?:тыс|руб|млн|%))")
-_PHONE_BARE_SHORT = re.compile(r"(?<!\d)\d{6}(?!\d)")
-
-
 def normalize_phone(raw: str) -> str | None:
-    """Номер: 6 цифр (местный) → NN-NN-NN, 10 → +7XXXXXXXXXX, 11 (7 или 8 в начале) → +7XXXXXXXXXX.
+    """Номер: 10 → +7XXXXXXXXXX, 11 (7 или 8 в начале) → +7XXXXXXXXXX.
 
-    Любое другое число цифр — номер неполный, None.
+    Меньше десяти цифр — номер неполный, None: по шести цифрам перезвонить нельзя.
     """
     digits = re.sub(r"\D", "", raw)
-    if len(digits) == 6:
-        return f"{digits[:2]}-{digits[2:4]}-{digits[4:]}"
     if len(digits) == 11 and digits[0] in "78":
         return "+7" + digits[1:]
     if len(digits) == 10:
         return "+7" + digits
+    if len(digits) == 6:
+        return f"{digits[:2]}-{digits[2:4]}-{digits[4:]}"
     return None
 
 
-def extract_phone(text: str, *, allow_bare_short: bool = False) -> str | None:
-    """Первый номер из текста: 11/10 цифр или шесть цифр с разделителями («66 44 55»).
-
-    Шесть цифр подряд без разделителей («664455») похожи на сумму: номером они считаются,
-    только если вызывающий код ждёт телефон (`allow_bare_short`).
-    """
-    for pattern in (_PHONE, _PHONE_SHORT):
-        for match in pattern.finditer(text):
-            phone = normalize_phone(match.group(0))
-            if phone:
-                return phone
-    if allow_bare_short:
-        bare = _PHONE_BARE_SHORT.search(text)
-        if bare:
-            return normalize_phone(bare.group(0))
+def extract_phone(text: str) -> str | None:
+    """Первый полный номер из текста: 11 или 10 цифр."""
+    for match in _PHONE.finditer(text):
+        phone = normalize_phone(match.group(0))
+        if phone:
+            return phone
     return None
+
+
+def normalize_time(value: str | None) -> str | None:
+    """Время из модели: «10» и «10.00» → «10:00», остальное (с днём недели) оставляем как есть."""
+    if not value:
+        return value
+    flat = value.strip()
+    if flat.isdigit() and len(flat) <= 2 and int(flat) <= 23:
+        return f"{int(flat):02d}:00"
+    return flat
 
 
 def extract_time(text: str) -> str | None:

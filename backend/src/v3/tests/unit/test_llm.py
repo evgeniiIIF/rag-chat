@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from domain.models import Chunk
 from domain.profile import ClientProfile
-from infrastructure.llm import Prompt, build_answer_fn, build_prompt, trim_history
+from infrastructure.llm import AnswerDraft, Prompt, build_answer_fn, build_prompt, trim_history
 
 
 def make_chunk() -> Chunk:
@@ -78,17 +78,21 @@ def test_trim_history_returns_list() -> None:
 def test_answer_fn_returns_text_and_records_call() -> None:
     from core.trace import LlmTrace, capture
 
+    class FakeStructured:
+        def invoke(self, messages: list[Any]) -> AnswerDraft:
+            return AnswerDraft(summary="Ответ модели.")
+
     class FakeModel:
-        def invoke(self, messages: list[Any]) -> AIMessage:
-            return AIMessage(content="  Ответ модели.  ")
+        def with_structured_output(self, schema: Any) -> FakeStructured:
+            return FakeStructured()
 
     answer = build_answer_fn(FakeModel())  # type: ignore[arg-type]
     prompt = build_prompt(step="ask_debt", profile=ClientProfile(), question="привет")
     trace = LlmTrace()
 
     with capture(trace):
-        text = answer(prompt)
+        draft = answer(prompt)
 
-    assert text == "Ответ модели."
+    assert draft.summary == "Ответ модели."
     assert trace.calls[0].purpose == "answer:ask_debt"
     assert trace.calls[0].messages[0].role == "system"

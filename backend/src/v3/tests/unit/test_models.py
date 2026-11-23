@@ -27,7 +27,7 @@ def test_chunk_builds_and_is_frozen() -> None:
     assert chunk.id == "doc.docx-0000"
     assert chunk.paragraph_end - chunk.paragraph_start == 2
     with pytest.raises(ValidationError):
-        chunk.text = "другое"  # type: ignore[misc]
+        chunk.text = "другое"
 
 
 def test_chunk_rejects_id_not_matching_source_and_order() -> None:

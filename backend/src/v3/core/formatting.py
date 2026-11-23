@@ -1,25 +1,103 @@
-"""Приведение ответа к читаемому виду: пункты «- » с новой строки, пустая строка перед списком.
+"""Приведение текста к виду, который понимает интерфейс: абзац, список «- », **жирный**.
 
-Модель любит писать список в одну строку («... как вы платите. - Сначала ... - Работаем ...»),
-а интерфейс рисует список только когда каждый пункт начинается с новой строки. Правило живёт
-здесь, а не в промпте: вёрстка не должна зависеть от настроения модели.
+Вёрстка живёт здесь, а не в промпте: модель отдаёт поля схемы, код собирает из них блоки.
+Здесь же чистка знаний: клиенту нельзя показывать инструкции операторам и кейсы других клиентов.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from typing import Any
 
-from core.behavior import CASE_CUT_RE, MAX_SENTENCES, OPERATOR_RE, STORY_RE
+from core.behavior import (
+    ASK_STEPS,
+    CASE_CUT_RE,
+    CLIENT_TALK_RE,
+    MAX_POINTS,
+    OPERATOR_LEAD_RE,
+    OPERATOR_RE,
+    OPERATOR_SENTENCE_RE,
+    POINT_MAX,
+    SELF_TALK_RE,
+    SHORT_STEPS,
+    STORY_RE,
+    SUMMARY_MAX,
+    booked_text,
+)
+from domain.profile import ClientProfile
 
 _SPACES = re.compile(r"[ \t]+")
+_SENTENCE = re.compile(r"(?<=[.!?…])\s+(?=[А-ЯЁA-Z«\"(])")
+# служебные ярлыки модели в начале фразы: клиенту они не нужны
+_LABEL = re.compile(r"(?i)^(?:кратко|коротко|важно|по сути)\s*:\s*")
+# клиент не проходит фильтры: консультацию и запись ему не предлагаем
+_CONSULT = re.compile(r"(?i)консультац\w*")
+# фильтры не пройдены: объяснять можно, обещать и склонять к процедуре нельзя
+_SELLING = re.compile(
+    r"(?i)списыва\w*\s+(?:долг|всё|все)|спиш\w*|полностью\s+списа\w*|единственн\w+\s+(?:законн\w+\s+)?способ"
+    r"|подходит\s+под\s+критери|гарантиру\w*|избавит\w*\s+от\s+долг|освободит\w*\s+от\s+долг"
+    r"|вам\s+(?:точно\s+)?подходит|рекомендую\s+(?:вам\s+)?(?:пройти|запустить|начать)"
+)
+# на шагах сбора данных о цене не говорим, пока клиент сам не спросил
+_PRICE = re.compile(r"(?i)\b(?:цен[аыуеой]?|стоимост\w*|дороже|дешевле|прайс)\b")
+# задание оператору: инфинитив первым словом или сразу после слова-маркера плана
+_PLAN_CUE = re.compile(
+    r"(?i)^(?:не|коротко|кратко|мягко|важно|лучше|стоит|нужно|можно|без|сразу|теперь|сначала|далее|затем)$"
+)
+# инфинитив, но не существительное на «-сть»: «Стоимость зависит…» — это ответ клиенту
+_INFINITIVE_WORD = re.compile(r"(?i)^\w+(?:(?<!с)(?<!е)ть|ться|ти)$")
+# план вместо ответа: «Ответ клиенту …: подтверждение, разбор и реструктуризация»
+# инструктивный зачин модели, который нельзя показывать клиенту
+_INSTR_HEAD = re.compile(
+    r"(?i)^\s*(?:нужн[аоы]|нужно|ответь|ответить|спроси|спросить|уточни|уточнить|попроси|попросить|"
+    r"подтверди|подтвердить|разбери|разобрать|объясни|объяснить|клиент\s+(?:спрашивает|указал|говорит|хочет))\b"
+)
+_PLAN_HEAD = re.compile(
+    r"(?i)^\s*(?:ответ|реплика|резюме|итог|вывод|план|задача|цель|шаг|стратегия|логика|"
+    r"подтверждение|разбор|что\s+не\s+списывается)\b[^.!?]{0,90}:"
+)
+# заметка модели о клиенте вместо ответа: «Ситуация: …», «Цель — …»
+_NOTE_HEAD = re.compile(
+    r"(?i)^\s*(?:ситуация|клиент|клиентка|данные|факты?|цель|задача|вводные|контекст|профиль|"
+    r"запрос\s+клиента|что\s+известно)\b[^.!?]{0,120}[:—]"
+)
+# служебные пометки из промпта: клиент читает ответ, а не состояние графа
+# остатки плана модели: «Упомянуто внесудебное банкротство», «Завершение — можно написать снова»
+_PLAN_RESIDUE = re.compile(
+    r"(?i)^\s*(?:упомянут\w*|отмечен\w*|указан\w*|завершени\w*|итог\w*\s*—"
+    r"|без\s+(?:вопрос|списк|предложени|пересказ|извинени|гаранти)\w*)"
+)
+_INTERNAL_NOTE = re.compile(
+    r"(?i)^\s*(?:клиент|клиентка)\b"
+    r"|фильтр\w*\s+(?:пройден\w*|не\s+пройден\w*)"
+    r"|состояние\s+фильтров|что\s+известно\s+о\s+клиенте"
+    r"|(?:регион|сумма|долг)\w*(?:\s+долга)?\s+(?:пока\s+)?неизвест\w*"
+    r"|пока\s+не\s+(?:указан|известн)\w*|регион\s+не\s+указан\w*"
+)
+# модель говорит о клиенте в третьем лице: клиент читает обращение к себе
+_THIRD_PERSON = re.compile(r"(?i)\b(?:он|его|ему|у\s+него|в\s+его|о\s+нём)\b")
+# благодарность за то, чего клиент не говорил («спасибо, что подробно всё рассказали»)
+_GRATITUDE = re.compile(r"(?i)^\s*(?:спасибо|благодарю)\b")
+# заметка модели вместо ответа: «Ответ клиенту…», «Клиент заметил…», «Один вопрос в конце:»
+_META = re.compile(
+    r"(?i)\bответ\s+клиент\w*|\bклиент\w*\s+(?:заметил\w*|спрашива\w*|указал\w*|говорит|хочет|не\s+проходит)\b"
+    r"|\bодин\s+вопрос\s*(?:в\s+конце)?\s*[:—-]"
+)
 # следы источника, которые модель иногда проговаривает вслух
 _SOURCE_REF = re.compile(
     r"(?i)\b(?:согласно|по|из|во|со|в)\s+(?:предоставленн\w+\s+)?"
     r"(?:документ\w*|фрагмент\w*|источник\w*|материал\w*|баз\w+\s+знаний|контекст\w*)\b[ ,:—-]*"
 )
 _BRACKET_ID = re.compile(r"\[[^\]]*?-\d{4}\]\s*")
-_ITEM = re.compile(r"\s+(?=[-•*]\s)")
-_MARK = re.compile(r"^[-•*]\s+")
+# то, что клиент должен увидеть сразу: суммы, телефон и время звонка
+_DETAIL = re.compile(
+    r"(?<!\*)(?:"
+    r"\b\d[\d\s\u00a0]*(?:₽|руб\w*|тыс\w*|млн\w*|миллион\w*|миллиард\w*)"
+    r"|\+?\d[\d\s()\-]{8,}\d"
+    r"|\b\d{1,2}[:.]\d{2}\b"
+    r")"
+)
 
 
 def _capitalize_first(text: str) -> str:
@@ -39,64 +117,302 @@ def strip_source_refs(text: str) -> str:
     return _capitalize_first(cleaned) if cleaned else text
 
 
-def normalize_answer(text: str) -> str:
-    """Убрать следы источника, разложить инлайн-пункты по строкам и отделить список пустой строкой."""
-    text = strip_source_refs(text)
-    blocks: list[str] = []
-    for block in text.strip().split("\n\n"):
-        flat = _SPACES.sub(" ", block.replace("\n", " ")).strip()
-        if not flat:
-            continue
-        parts = _ITEM.split(flat)
-        head = parts[0].strip()
-        items = [_MARK.sub("", part).strip() for part in parts[1:]]
-        if _MARK.match(head):  # блок начался сразу с пункта списка
-            items.insert(0, _MARK.sub("", head).strip())
+def highlight_details(text: str) -> str:
+    """Выделить сумму, номер и время жирным: фронтенд рисует **…** акцентом."""
+    if "**" in text:  # модель уже что-то выделила — не ломаем её разметку
+        return text
+    return _DETAIL.sub(lambda match: f"**{match.group(0).strip()}**", text)
+
+
+def _instruction(sentence: str) -> bool:
+    """Фраза написана как задание («Спросить…», «Не давить…»), а не как ответ клиенту."""
+    words = sentence.split()
+    if not words:
+        return True
+    if words[0][:1].islower():  # обрывок мысли после вырезанного начала
+        return True
+    if _INFINITIVE_WORD.match(words[0].strip(":;,.-—–")):
+        return True
+    # «Не давить…», «Сразу обозначить…», «Коротко объяснить…», «Нужно коротко объяснить…» —
+    # инфинитив среди первых трёх слов после маркера плана
+    return bool(_PLAN_CUE.match(words[0])) and any(_INFINITIVE_WORD.match(w) for w in words[1:3])
+
+
+def _client_voice(text: str, step: str = "") -> str:
+    """Убрать рассуждения модели о клиенте и о себе: клиент читает только обращённый к нему ответ."""
+    sentences = _SENTENCE.split(" ".join(text.split()))
+    # обрывки после сокращения («800 тыс. — подходит») и рассуждения модели клиенту не нужны
+    return " ".join(
+        _LABEL.sub("", sentence)
+        for sentence in sentences
+        if len(sentence.strip()) >= 12
+        and sentence.strip()[0] not in "—–-"
+        and not SELF_TALK_RE.search(sentence)
+        and not _instruction(sentence)
+        and not _PLAN_HEAD.search(sentence)
+        and not _INSTR_HEAD.search(sentence)
+        and not _NOTE_HEAD.search(sentence)
+        and not _INTERNAL_NOTE.search(sentence)
+        and not _PLAN_RESIDUE.search(sentence)
+        and not STORY_RE.search(sentence)
+        and not (step == "info" and "?" in sentence)
+        and not _META.search(sentence)
+        and not _THIRD_PERSON.search(sentence)
+        and not _GRATITUDE.search(sentence)
+        and not (step == "info" and (_CONSULT.search(sentence) or _SELLING.search(sentence)))
+        and not (step in ASK_STEPS and _PRICE.search(sentence))
+    ).strip()
+
+
+def _shorten(text: str, limit: int = POINT_MAX) -> str:
+    """Пункт — одна короткая мысль: длинный абзац из знаний обрезаем по границе фразы."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    for separator in (". ", "; ", ", "):
+        position = cut.rfind(separator)
+        if position > limit // 3:
+            return cut[:position].rstrip(" ,;—-") + "."
+    return cut[: cut.rfind(" ")].rstrip(" ,;—-") + "."
+
+
+def _words(text: str) -> str:
+    """Текст без пунктуации и регистра: чтобы поймать один и тот же смысл в разных полях."""
+    return _SPACES.sub(" ", re.sub(r"[^\w\s]", " ", text.casefold())).strip()
+
+
+def _stems(text: str) -> set[str]:
+    """Грубые основы слов: «рассрочка/рассрочкой» — одно и то же."""
+    return {word[:5] for word in re.findall(r"\w+", text.casefold()) if len(word) > 3}
+
+
+def _similar(one: str, other: str) -> bool:
+    """Одна и та же мысль другими словами: больше половины основ совпало."""
+    left, right = _stems(one), _stems(other)
+    return bool(left and right) and len(left & right) / len(left | right) >= 0.5
+
+
+def _repeat(one: str, other: str) -> bool:
+    """Считаем повтором, когда фраза совпадает целиком или один текст вложен в другой."""
+    left, right = _words(one), _words(other)
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def answer_text(
+    summary: str,
+    points: Iterable[str],
+    question: str,
+    step: str = "",
+    profile: ClientProfile | None = None,
+    ask: str = "",
+    said: Iterable[str] = (),
+) -> str:
+    """Текст ответа из полей схемы: суть абзацем, пояснения списком, вопрос отдельным блоком.
+
+    Одна мысль — один раз: поле, которое повторяет суть или вопрос, отбрасывается. На шагах сбора
+    данных остаётся только вопрос, иначе модель дублирует его в сути и в пунктах.
+    """
+    head = _shorten(dedupe_sentences(_client_voice(strip_source_refs(summary), step)), SUMMARY_MAX)
+    if step in SHORT_STEPS:  # здесь нужна одна живая фраза, а не абзац
+        head = _SENTENCE.split(head)[0].strip()
+        if head.endswith("?"):  # вопрос задаёт код: второй вопрос в одном ответе — дубль
             head = ""
-        items = [item for item in items if item]
-        if not items:
-            blocks.append(flat)
-            continue
-        listing = "\n".join(f"- {item}" for item in items)
-        blocks.append(f"{head}\n\n{listing}" if head else listing)
+    if step == "booked" and profile is not None:  # запись подтверждаем ровно тем, что сохранили
+        return highlight_details(booked_text(profile, head))
+    # вопрос шага задаёт код: его формулировка не зависит от модели и всегда доходит до клиента
+    own = only_question(strip_source_refs(question))
+    tail = ask or own
+    if step == "info":  # клиент не проходит фильтр: объясняем и закрываем разговор, вопросов больше нет
+        tail = ""
+    if head and tail and _repeat(head, tail):  # вопрос модели совпал с вопросом шага
+        head = ""
+    # шаги сбора данных: клиенту ничего не объясняем, остаётся реплика и вопрос
+    if step in SHORT_STEPS:
+        points = []
+    items = [
+        _shorten(_client_voice(strip_source_refs(point), step))
+        for point in points
+        if point.strip() and not STORY_RE.search(point)
+    ]
+    items = [item for item in items if item]
+    items = [item for item in items if not _repeat(item, head) and not _repeat(item, tail)]
+    # клиент это уже слышал в прошлых ответах — второй раз не повторяем
+    items = [item for item in items if not any(_similar(item, old) for old in said)]
+    unique: list[str] = []
+    for item in items:
+        if not any(_repeat(item, kept) for kept in unique):
+            unique.append(item)
+    items = unique[:MAX_POINTS]
+    blocks: list[str] = []
+    if head:
+        blocks.append(highlight_details(head))
+    if items:
+        blocks.append("\n".join(f"- {highlight_details(item)}" for item in items))
+    if tail:
+        blocks.append(highlight_details(tail))
     return "\n\n".join(blocks)
 
 
-_SENTENCE = re.compile(r"(?<=[.!?…])\s+(?=[А-ЯЁA-Z«\"(—])")
+def only_question(text: str) -> str:
+    """Только сам вопрос: обоснования и пояснения после него клиенту не нужны."""
+    sentences = _SENTENCE.split(" ".join(text.split()))
+    kept: list[str] = []
+    for sentence in sentences:
+        kept.append(sentence.strip("-•* "))
+        if sentence.rstrip().endswith("?"):
+            return " ".join(kept).strip()
+    return ""
 
 
-def _is_question(sentence: str) -> bool:
-    return sentence.rstrip().rstrip('»"').endswith("?")
+def parse_reply(text: str) -> tuple[str, list[str], str]:
+    """Текст модели → поля схемы: строки с «- » пункты, последний абзац с «?» вопрос."""
+    head: list[str] = []
+    points: list[str] = []
+    tail: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("-", "•", "*")):
+            points.append(line.lstrip("-•* ").strip())
+        elif points:
+            tail.append(line)
+        else:
+            head.append(line)
+    question = ""
+    if tail:
+        merged = " ".join(tail)
+        if "?" in merged:
+            question = merged
+        else:
+            head.extend(tail)
+    return " ".join(head).strip(), points, question
 
 
-def enforce_style(text: str, step: str) -> str:
-    """Дисциплина ответа в коде, а не в промпте: без чужих кейсов, без вопросов на info, ограничение длины.
+def split_question(text: str) -> tuple[str, str]:
+    """Текст ответа → консультация и вопрос: последний абзац с «?» — это вопрос клиенту.
 
-    Финальный вопрос (шаг к записи) при обрезке сохраняется. Ответ со списком не трогаем.
+    Вопрос уходит отдельным полем контракта, чтобы интерфейс показал его плашкой,
+    а не последним предложением в куче текста.
     """
-    if re.search(r"(?m)^\s*[-•*]\s", text):
-        return text
-    sentences = [part for part in _SENTENCE.split(" ".join(text.split())) if part]
-    if not sentences:
-        return text
-    kept = [part for part in sentences if not STORY_RE.search(part)] or sentences
-    if step == "info":
-        kept = [part for part in kept if not _is_question(part)] or kept
-    limit = MAX_SENTENCES.get(step, 5)
-    result = kept[:limit]
-    if len(kept) > limit and step != "info" and _is_question(kept[-1]):
-        result = [*result[:-1], kept[-1]]
-    return " ".join(result)
+    blocks = [block.strip() for block in text.strip().split("\n\n") if block.strip()]
+    if len(blocks) > 1 and "?" in blocks[-1] and not blocks[-1].startswith("- "):
+        return "\n\n".join(blocks[:-1]), blocks[-1]
+    return text.strip(), ""
 
 
 def knowledge_text(text: str) -> str:
-    """Знания для клиента: без инструкций операторам и без кейсов. Пустая строка — фрагмент не годится."""
-    flat = text.strip()
-    if not flat or OPERATOR_RE.search(flat):
+    """Знания для клиента: без инструкций операторам и без кейсов других клиентов.
+
+    Режем по предложениям, а не абзац целиком: в одном абзаце рядом полезные факты и служебная
+    пометка вроде «это не нужно зачитывать». Кейс обрывает абзац — всё после него не отдаём.
+    """
+    flat = " ".join(text.split())
+    if not flat:
         return ""
-    if flat[0].islower():  # продолжение предложения из прошлого фрагмента: обычно хвост кейса
+    if not flat[0].isupper():  # обрывок с середины фразы: начало кейса потеряно при нарезке
         return ""
-    cut = CASE_CUT_RE.search(flat)
-    if cut:
-        flat = flat[: cut.start()].strip()
-    return flat
+    sentences = _SENTENCE.split(flat)
+    if OPERATOR_RE.search(sentences[0]):  # абзац целиком написан для операторов, клиенту не показываем
+        return ""
+    sentences[0] = OPERATOR_LEAD_RE.sub("", sentences[0])  # «правильно объяснять так:» — зачин для оператора
+    kept: list[str] = []
+    for sentence in sentences:
+        if CASE_CUT_RE.search(sentence) or STORY_RE.search(sentence):
+            break
+        if OPERATOR_RE.search(sentence) or OPERATOR_SENTENCE_RE.search(sentence):
+            continue
+        if CLIENT_TALK_RE.search(sentence):
+            continue
+        kept.append(sentence)
+    result = " ".join(kept).strip()
+    return result if len(result) >= 40 else ""
+
+
+def normalize_answer(text: str) -> str:
+    """Привести ответ модели к вёрстке интерфейса: абзацы и список «- »."""
+    cleaned = strip_source_refs(text)
+    cleaned = re.sub(r"\s+-\s+", "\n- ", cleaned)
+    lines = [line.strip() for line in cleaned.splitlines()]
+    blocks: list[str] = []
+    bullets: list[str] = []
+    for line in lines:
+        if not line:
+            if bullets:
+                blocks.append("\n".join(bullets))
+                bullets = []
+            continue
+        if line.startswith(("-", "•", "*")):
+            bullets.append("- " + line.lstrip("-•* ").strip())
+        else:
+            if bullets:
+                blocks.append("\n".join(bullets))
+                bullets = []
+            blocks.append(line)
+    if bullets:
+        blocks.append("\n".join(bullets))
+    return "\n\n".join(block for block in blocks if block).strip()
+
+
+def enforce_style(text: str, step: str = "") -> str:
+    """Финальная чистка: без заметок модели, инструкций и третьего лица."""
+    return _client_voice(strip_source_refs(text), step)
+
+
+def dedupe_sentences(text: str) -> str:
+    """Одна мысль один раз: фразу, повторяющую уже сказанное, выбрасываем."""
+    kept: list[str] = []
+    for sentence in _SENTENCE.split(" ".join(text.split())):
+        clean = sentence.strip()
+        if clean and not any(_repeat(clean, old) or _similar(clean, old) for old in kept):
+            kept.append(clean)
+    return " ".join(kept)
+
+
+def clean_note(text: str, step: str = "") -> str:
+    """Оговорка клиенту: без ссылок на источник, служебных заметок и историй других клиентов."""
+    cleaned = _client_voice(strip_source_refs(text), step)
+    return "" if STORY_RE.search(cleaned) else cleaned
+
+
+def build_blocks(
+    body: str,
+    note: str = "",
+    question: str = "",
+) -> list[dict[str, Any]]:
+    """Ответ блоками для интерфейса: суть, пояснения списком, оговорка, вопрос.
+
+    Плашки «фактов» здесь нет: любая подпись вида «из контекста» выдаёт клиенту источник.
+    """
+    paragraphs = [part.strip() for part in body.split("\n\n") if part.strip()]
+    last = paragraphs[-1] if paragraphs else ""
+    if not question and last and not last.startswith("- ") and last.rstrip("* ").endswith("?"):
+        question = paragraphs.pop()  # на шагах сбора данных ответ состоит из одного вопроса
+    blocks: list[dict[str, Any]] = []
+    lead_done = False
+    for part in paragraphs:
+        if part.startswith("- "):
+            items = [line[2:].strip() for line in part.splitlines() if line.startswith("- ")]
+            blocks.append({"type": "list", "items": items})
+            continue
+        blocks.append({"type": "text" if lead_done else "lead", "text": part})
+        lead_done = True
+    if note:
+        blocks.append({"type": "note", "text": highlight_details(note)})
+    if question:
+        blocks.append({"type": "question", "text": question})
+    return blocks
+
+
+def booked_blocks() -> list[dict[str, Any]]:
+    """Подтверждение записи блоками: суть и список того, что подготовить к консультации."""
+    return [
+        {"type": "lead", "text": "Записал вас на консультацию: юрист сам позвонит в назначенное время."},
+        {
+            "type": "list",
+            "title": "Что подготовить",
+            "items": ["Паспорт", "Список кредиторов с суммами", "Справки о доходах"],
+        },
+    ]

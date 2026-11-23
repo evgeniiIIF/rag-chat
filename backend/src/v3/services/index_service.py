@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from core.config import Settings
+from core.formatting import knowledge_text
 from domain.models import Chunk, RetrievedChunk
 from infrastructure.artifacts import read_json, read_jsonl, write_chunks_markdown, write_json, write_jsonl
 from infrastructure.index import HybridRetriever, build_index
@@ -31,9 +32,8 @@ def build_manifest(documents: Sequence[LoadedDocument], settings: Settings) -> d
     """Отпечаток корпуса: sha256 документов + параметры чанкинга и эмбеддингов."""
     return {
         "documents": [{"source": document.source, "sha256": document.sha256} for document in documents],
-        "chunk_size": settings.chunk_size,
-        "chunk_overlap": settings.chunk_overlap,
         "splitter_version": SPLITTER_VERSION,
+        "chunking": "paragraph",
         "embedding_model": settings.embedding_model,
     }
 
@@ -76,11 +76,9 @@ class IndexService:
             self._write_snapshot()
             return
 
-        chunks = self._split(
-            documents,
-            chunk_size=self._settings.chunk_size,
-            chunk_overlap=self._settings.chunk_overlap,
-        )
+        # служебные абзацы (инструкции операторам) не должны занимать места в поиске
+        split_chunks = self._split(documents)
+        chunks = [chunk for chunk in split_chunks if knowledge_text(chunk.text)]
         write_jsonl(chunks_path, [chunk.model_dump(mode="json") for chunk in chunks])
         write_json(manifest_path, manifest)
         self._chunks = chunks
