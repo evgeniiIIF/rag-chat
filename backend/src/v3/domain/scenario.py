@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from core.behavior import INFO_QUERIES, KNOWLEDGE_STEPS, STEP_QUERIES
+from core.behavior import INFO_QUERIES, KNOWLEDGE_STEPS, SHORT_QUERY_WORDS, STEP_QUERIES
 
 __all__ = [
     "CONTEXT_STEPS",
@@ -24,6 +24,7 @@ __all__ = [
     "expected_slot",
     "next_step",
     "search_query",
+    "turn_query",
 ]
 from domain.profile import ClientProfile
 
@@ -100,6 +101,29 @@ def search_query(step: str, question: str, profile: ClientProfile, kind: str = "
         return question.strip()
     topic = client_topic(question)
     return f"{base}. Клиент спрашивает: {topic}" if topic and topic not in base else base
+
+
+def turn_query(
+    step: str,
+    question: str,
+    profile: ClientProfile,
+    kind: str = "situation",
+    previous_question: str = "",
+) -> list[str]:
+    """Запросы в индекс до вызова модели: тема шага и реплика, для короткого follow-up — ещё и прошлая.
+
+    Раньше follow-up переписывала модель отдельным вызовом («а сроки?» → полный вопрос).
+    Теперь это делает код двумя запросами и слиянием RRF: один вызов модели на ход.
+    """
+    queries = [search_query(step, question, profile, kind)]
+    short = len(" ".join(question.split()).split()) < SHORT_QUERY_WORDS
+    if previous_question and short:
+        queries.append(search_query(step, previous_question, profile, kind))
+    unique: list[str] = []
+    for query in queries:
+        if query.strip() and query not in unique:
+            unique.append(query)
+    return unique
 
 
 def next_step(profile: ClientProfile, kind: str) -> Step:

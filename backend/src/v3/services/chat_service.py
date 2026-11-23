@@ -17,9 +17,9 @@ from core.trace import LlmTrace, capture
 from domain.graph_state import GraphState
 from domain.profile import ClientProfile
 from graph.build import build_graph
-from graph.nodes.retrieve import SearchFn
+from graph.nodes import SearchFn
 from infrastructure.artifacts import write_json
-from infrastructure.llm import AnswerFn, CondenseFn, IntakeFn
+from infrastructure.llm import TurnFn
 from schemas.chat import (
     QUESTION_MAX_LENGTH,
     BlockSchema,
@@ -45,14 +45,10 @@ class ChatService:
         settings: Settings,
         *,
         search: SearchFn,
-        answer_fn: AnswerFn,
-        condense: CondenseFn | None = None,
-        intake: IntakeFn | None = None,
+        turn_fn: TurnFn,
         artifacts_dir: Path | None = None,
     ) -> None:
         self._settings = settings
-        self._condense = condense
-        self._intake = intake
         self._artifacts_dir = artifacts_dir if artifacts_dir is not None else settings.artifacts_dir
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
@@ -72,11 +68,9 @@ class ChatService:
         )
         self._graph = build_graph(
             search=search,
-            answer_fn=answer_fn,
+            turn_fn=turn_fn,
             threshold=settings.score_threshold,
             artifacts_dir=self._artifacts_dir,
-            condense=self._condense,
-            intake=self._intake,
             checkpointer=self._checkpointer,
         )
 

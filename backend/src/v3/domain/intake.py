@@ -1,18 +1,20 @@
-"""Узел разбора реплики: слоты профиля через модель + правила по ожидаемому слоту.
+"""Слоты профиля: правила поверх ответа модели и разбор без модели.
 
-Что бот спросил на прошлом ходу (`expected_slot`), то клиент и ответил: «664455» после вопроса
-о телефоне это номер, после вопроса о сумме это сумма. Новое значение заменяет старое.
-Мусор разбора («RUB» как регион, млрд как долг) не попадает в слоты.
+Модель отдаёт поля схемы (`domain.models.TurnDraft`), но решает код: мусор разбора не затирает
+известное значение, а короткий ответ на заданный вопрос («664455» после вопроса о телефоне)
+попадает именно в ожидаемый слот. Здесь же `rules_draft` — разбор регулярками, когда знаний нет
+и модель вовсе не вызывается, и `rule_kind` — тип реплики до вызова.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from typing import Literal
 
 from langchain_core.messages import BaseMessage
 
-from domain.graph_state import GraphState
+from domain.models import TurnDraft
 from domain.profile import (
     ClientProfile,
     amount_in_text,
@@ -26,8 +28,9 @@ from domain.profile import (
     parse_amount,
 )
 from domain.scenario import expected_slot
-from graph.nodes import NodeFn, NodeResult
-from infrastructure.llm import IntakeDraft, IntakeFn
+
+# тип реплики: вопрос про правила или рассказ о своей ситуации
+Kind = Literal["question", "situation"]
 
 # факты, дублирующие слоты профиля или служебные пометки модели: они только путают ответ
 # без «?» и без вопросительного слова реплика — просьба или рассказ, а не вопрос
@@ -50,7 +53,6 @@ _SIDE_AMOUNT = re.compile(
 _PURE_PHONE = re.compile(r"[\d\s\-+()]*\d[\d\s\-+()]*")
 _HOUR_ONLY = re.compile(r"\d{1,2}")
 # регион — короткое название, а не фраза-просьба: «консультацию давай» регионом не становится
-_REGION_WORD = re.compile(r"^[а-яё][а-яё\s\-.]*$", re.IGNORECASE)
 _REGION_STOP = re.compile(
     r"(?i)давай|дайте|хочу|можно|надо|нужно|подскаж|скаж|спас|привет|здравств"
     r"|консультац|банкрот|долг|сумм|телефон|время|запис"
@@ -59,6 +61,13 @@ _REGION_STOP = re.compile(
 _REGION_NOISE = re.compile(
     r"(?i)\b(?:я|мы|вы|в|во|на|из|регион|регионе|город|городе|прописан\w*|проживаю|живу|это|там)\b"
 )
+
+
+def rule_kind(question: str) -> Kind:
+    """Тип реплики до вызова модели: вопрос — есть «?» или вопросительное слово, иначе рассказ о себе."""
+    if "?" in question or _QUESTION_WORD.search(question):
+        return "question"
+    return "situation"
 
 
 def _region_from_text(text: str) -> str:
@@ -74,7 +83,7 @@ def _drop_slot_facts(facts: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in facts.items() if not _SLOT_KEYS.search(str(key))}
 
 
-def _expected_from_history(history: Sequence[BaseMessage], profile: ClientProfile) -> str | None:
+def expected_slot_from_history(history: Sequence[BaseMessage], profile: ClientProfile) -> str | None:
     """Что бот спросил в прошлой реплике — по последнему ai-сообщению, а не по next_step.
 
     Баг: expected_slot(profile) пересчитывался от профиля, и при kind=question
@@ -94,18 +103,49 @@ def _expected_from_history(history: Sequence[BaseMessage], profile: ClientProfil
     return expected_slot(profile)
 
 
+def rules_draft(question: str, expected: str | None = None) -> TurnDraft:
+    """Разбор реплики без модели: телефон, время, сумма и регион регулярками.
+
+    Это база для вызова модели (она дополняет пропущенное) и единственный разбор, когда знаний
+    нет и модель не зовётся. Предположения («а если долг 500 тысяч?») в слоты не попадают.
+    """
+    text = question.strip()
+    kind: Kind = rule_kind(text)
+    if kind == "question":
+        return TurnDraft(kind="question")
+    update: dict[str, object] = {}
+    if expected == "phone" and _PURE_PHONE.fullmatch(text):
+        update = {"phone": text, "kind": "situation"}
+    elif expected == "time" and _HOUR_ONLY.fullmatch(text) and int(text) <= 23:
+        update = {"consultation_time": f"{int(text):02d}:00", "kind": "situation"}
+    else:
+        amount = parse_amount(text)
+        if amount is None and expected == "debt":
+            amount = amount_in_text(text)
+        if amount is not None:
+            update = {"debt_amount": amount, "kind": "situation"}
+        else:
+            phone = extract_phone(text)
+            when = extract_time(text)
+            region = clean_region(_region_from_text(text)) if expected == "region" else None
+            if phone:
+                update["phone"] = phone
+            if when:
+                update["consultation_time"] = when
+            if region:
+                update["region"] = region
+    return TurnDraft(kind=kind).model_copy(update=update)
+
+
 def _apply_expected(
     profile: ClientProfile,
     question: str,
-    draft: IntakeDraft,
-    history: Sequence[BaseMessage] = (),
+    draft: TurnDraft,
     expected: str | None = None,
-) -> IntakeDraft:
+) -> TurnDraft:
     """Ответ на заданный вопрос разбираем кодом: модель-разборщик здесь только запасной вариант."""
     if draft.kind == "question":  # числа из вопроса («а если долг 500 тысяч?») в слоты не пишем
         return draft
-    if expected is None:
-        expected = _expected_from_history(history, profile)
     text = question.strip()
     update: dict[str, object] = {}
     if expected == "phone" and _PURE_PHONE.fullmatch(text):
@@ -129,8 +169,8 @@ def _apply_expected(
 def _debt_is_total(question: str, expected: str | None) -> bool:
     """Сумма становится общим долгом, только если клиент так её и назвал.
 
-    «Рассрочку на 310к платить не могу» — обстоятельство, а не долг: иначе бот ошибочно
-    отказывает по сумме, которой клиент ещё не называл.
+    «Рассрочку на 310к платить не могу» — обстоятельство, а не долг: иначе бот ошибочно отказывает
+    по сумме, которой клиент ещё не называл.
     """
     text = " ".join(question.split())
     words = text.split()
@@ -151,7 +191,7 @@ def _debt_is_total(question: str, expected: str | None) -> bool:
     )
 
 
-def _merge_phone(profile: ClientProfile, question: str, draft: IntakeDraft) -> tuple[str | None, str | None]:
+def _merge_phone(profile: ClientProfile, question: str, draft: TurnDraft) -> tuple[str | None, str | None]:
     """Телефон: полный номер заменяет старый, неполный запоминается отдельно как phone_raw."""
     phone, raw = profile.phone, profile.phone_raw
     if draft.phone:
@@ -166,7 +206,7 @@ def _merge_phone(profile: ClientProfile, question: str, draft: IntakeDraft) -> t
     return phone, raw
 
 
-def _merge(profile: ClientProfile, question: str, draft: IntakeDraft) -> ClientProfile:
+def _merge(profile: ClientProfile, question: str, draft: TurnDraft) -> ClientProfile:
     # мусорный разбор («3.5 млрд», «RUB» вместо региона) не затирает уже известное значение
     debt = (clean_debt(draft.debt_amount) if draft.debt_amount is not None else None) or profile.debt_amount
     region = (clean_region(draft.region) if draft.region is not None else None) or profile.region
@@ -185,15 +225,24 @@ def _merge(profile: ClientProfile, question: str, draft: IntakeDraft) -> ClientP
     )
 
 
-def make_extract_node(intake: IntakeFn) -> NodeFn:
-    def extract(state: GraphState) -> NodeResult:
-        draft = intake(state.question, state.messages[:-1])
-        if draft.kind == "question" and "?" not in state.question and not _QUESTION_WORD.search(state.question):
-            draft = draft.model_copy(update={"kind": "situation"})
-        expected = _expected_from_history(state.messages[:-1], state.profile)
-        draft = _apply_expected(state.profile, state.question, draft, expected=expected)
-        if not _debt_is_total(state.question, expected):
-            draft = draft.model_copy(update={"debt_amount": None})
-        return {"profile": _merge(state.profile, state.question, draft), "kind": draft.kind}
+def apply_turn(
+    profile: ClientProfile,
+    question: str,
+    draft: TurnDraft,
+    *,
+    history: Sequence[BaseMessage] = (),
+    expected: str | None = None,
+) -> tuple[ClientProfile, Kind]:
+    """Применить разбор хода к профилю: вернуть новый профиль и тип реплики.
 
-    return extract
+    Порядок важен: сначала ожидаемый слот (короткий ответ — это ответ на вопрос бота), потом проверка,
+    что сумма действительно общий долг, и только затем мерж с чисткой значений.
+    """
+    slot = expected if expected is not None else expected_slot_from_history(history, profile)
+    kind: Kind = draft.kind or rule_kind(question)
+    if kind == "question" and "?" not in question and not _QUESTION_WORD.search(question):
+        kind = "situation"
+    draft = _apply_expected(profile, question, draft, expected=slot)
+    if not _debt_is_total(question, slot):
+        draft = draft.model_copy(update={"debt_amount": None})
+    return _merge(profile, question, draft), kind

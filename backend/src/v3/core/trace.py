@@ -29,7 +29,7 @@ class LlmMessage(BaseModel):
 class LlmCall(BaseModel):
     """Один вызов модели, разложенный по частям: промпт, история, вход, что ушло и что вернулось."""
 
-    purpose: str = Field(description="что делает вызов: intake, condense, answer:<шаг>")
+    purpose: str = Field(description="что делает вызов: turn:<шаг> — один вызов на ход")
     model: str
     stage: str | None = Field(
         default=None,

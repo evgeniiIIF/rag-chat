@@ -1,10 +1,21 @@
-"""Доменные модели: фрагмент документа и попадание в выдачу поиска. Логики здесь нет."""
+"""Доменные модели: фрагмент документа, попадание в поиск и ответ модели за один ход. Логики здесь нет."""
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from core.behavior import (
+    DEBT_HINT,
+    FACTS_HINT,
+    FOCUS_HINT,
+    KIND_HINT,
+    PHONE_HINT,
+    REGION_HINT,
+    TEXT_HINT,
+    TIME_HINT,
+)
 
 
 class Chunk(BaseModel):
@@ -37,3 +48,20 @@ class RetrievedChunk(BaseModel):
     chunk: Chunk
     score: float = Field(ge=0.0, le=1.0)
     rank: int = Field(ge=1)
+
+
+class TurnDraft(BaseModel):
+    """Ответ модели за один запрос: сначала разбор реплики, потом текст клиенту.
+
+    Это вход и выход адаптера модели: слоты применяет код (`domain/intake.py`), поэтому любое
+    значение здесь — только предложение, а не факт профиля.
+    """
+
+    kind: Literal["question", "situation"] | None = Field(default=None, description=KIND_HINT)
+    debt_amount: int | None = Field(default=None, description=DEBT_HINT)
+    region: str | None = Field(default=None, description=REGION_HINT)
+    phone: str | None = Field(default=None, description=PHONE_HINT)
+    consultation_time: str | None = Field(default=None, description=TIME_HINT)
+    facts: dict[str, str] = Field(default_factory=dict, description=FACTS_HINT)
+    focus: str = Field(default="", description=FOCUS_HINT)
+    text: str = Field(default="", description=TEXT_HINT)

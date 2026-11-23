@@ -17,7 +17,7 @@ from api import graph as graph_api
 from api import health as health_api
 from core.config import Settings, get_settings
 from core.logging import configure_logging
-from infrastructure.llm import build_answer_fn, build_chat_model, build_condense, build_intake
+from infrastructure.llm import build_chat_model, build_turn_fn
 from services.chat_service import ChatService
 from services.index_service import IndexService
 
@@ -46,9 +46,7 @@ def create_app(settings: Settings | None = None, *, service: ChatService | None 
                 app.state.chat_service = ChatService(
                     config,
                     search=index.search,
-                    answer_fn=build_answer_fn(build_chat_model(config)),
-                    condense=build_condense(build_chat_model(config, max_tokens=200)),
-                    intake=build_intake(build_chat_model(config, max_tokens=2000)),
+                    turn_fn=build_turn_fn(build_chat_model(config)),
                 )
                 logger.info("индекс готов: %d фрагментов", len(index.chunks))
         yield

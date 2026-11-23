@@ -180,6 +180,10 @@ _WARM_ACK = re.compile(
 )
 
 
+# на сборе фильтров о цене не говорим, пока клиент сам не спросил; на invite цена — часть предложения
+_PRICE_GUARD_STEPS = ASK_STEPS - {"invite"}
+
+
 def _client_voice(text: str, step: str = "") -> str:
     """Убрать рассуждения модели о клиенте и о себе: клиент читает только обращённый к нему ответ."""
     sentences = _SENTENCE.split(" ".join(text.split()))
@@ -202,7 +206,7 @@ def _client_voice(text: str, step: str = "") -> str:
         and not _GRATITUDE.search(sentence)
         and not _REGALIA.search(sentence)
         and not (step == "info" and (_CONSULT.search(sentence) or _SELLING.search(sentence)))
-        and not (step in ASK_STEPS and _PRICE.search(sentence))
+        and not (step in _PRICE_GUARD_STEPS and _PRICE.search(sentence))
     ).strip()
 
 

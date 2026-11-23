@@ -46,7 +46,9 @@ class Settings(BaseSettings):
     score_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
 
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=800, ge=1, le=8192)
+    max_tokens: int = Field(default=900, ge=1, le=8192)
+    # таймаут одного запроса к модели: второй попытки нет, лучше отдать ответ из кода
+    llm_timeout: float = Field(default=60.0, ge=5.0, le=300.0)
     log_level: str = "INFO"
 
 
