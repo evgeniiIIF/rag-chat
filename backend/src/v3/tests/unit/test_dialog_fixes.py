@@ -7,6 +7,7 @@ from typing import cast
 
 from langchain_core.messages import BaseMessage
 
+from core.behavior import SYSTEM_PROMPT, booked_text
 from core.formatting import answer_text, build_blocks, enforce_style
 from domain.graph_state import GraphState
 from domain.models import RetrievedChunk
@@ -284,3 +285,17 @@ def test_plan_residue_is_not_shown_to_client() -> None:
     assert "Упомянуто" not in text
     assert "Завершение" not in text
     assert "общий долг" in text.lower()
+
+
+def test_prompt_asks_for_business_tone_and_topic_answer() -> None:
+    assert "Конечно" in SYSTEM_PROMPT  # запрет на панибратство сформулирован явно
+    assert "деловым языком" in SYSTEM_PROMPT
+    assert "говори по теме реплики" in SYSTEM_PROMPT
+    assert "с какого года работает" in SYSTEM_PROMPT
+
+
+def test_booking_text_invites_to_fix_wrong_data() -> None:
+    text = booked_text(ClientProfile(phone="+79991234567", consultation_time="в 12 сегодня"), "")
+
+    assert "+79991234567" in text
+    assert "поправлю" in text
