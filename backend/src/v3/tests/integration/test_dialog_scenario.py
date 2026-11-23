@@ -42,7 +42,7 @@ class FakeAnswer:
 
     def __call__(self, prompt: Prompt) -> AnswerDraft:
         self.prompts.append(prompt)
-        return AnswerDraft(summary=f"Ответ на шаге {prompt.stage}.")
+        return AnswerDraft(text=f"Ответ на шаге {prompt.stage}.")
 
 
 def make_graph(answer: FakeAnswer, tmp_path: Path) -> Any:

@@ -180,14 +180,28 @@ def extract_phone(text: str) -> str | None:
     return None
 
 
+_TIME_WORD = re.compile(r"(?i)^\s*(?:в\s+)?(\d{1,2})(?:[:.](\d{2}))?\s*(утра|дня|вечера|ночи)?\s*$")
+
+
 def normalize_time(value: str | None) -> str | None:
-    """Время из модели: «10» и «10.00» → «10:00», остальное (с днём недели) оставляем как есть."""
+    """Время из модели: «10», «10.00», «10 утра», «10 вечера» → «10:00»/«22:00».
+
+    Остальное (с днём недели) оставляем как есть.
+    """
     if not value:
         return value
     flat = value.strip()
-    if flat.isdigit() and len(flat) <= 2 and int(flat) <= 23:
-        return f"{int(flat):02d}:00"
-    return flat
+    match = _TIME_WORD.match(flat)
+    if not match:
+        return flat
+    hour = int(match.group(1))
+    minutes = match.group(2) or "00"
+    part = (match.group(3) or "").lower()
+    if (part in {"вечера", "ночи"} and hour < 12) or (part == "дня" and hour < 10):
+        hour += 12
+    if hour > 23:
+        return flat
+    return f"{hour:02d}:{minutes}"
 
 
 def extract_time(text: str) -> str | None:
@@ -214,6 +228,27 @@ _AMOUNT_ONLY = re.compile(
     r"(тыс\w*|т\.?\s?р\.?|к|k|млн\w*|миллион\w*|руб\w*|р\.?|₽)?\.?\s*$",
     re.IGNORECASE,
 )
+
+
+_AMOUNT_WITH_UNIT = re.compile(
+    r"(?i)(\d{1,3}(?:\s\d{3})+|\d+)([.,]\d+)?\s*(тыс\w*|т\.?\s?р\.?|к\b|k\b|млн\w*|миллион\w*|руб\w*|р\.|₽)"
+)
+
+
+def amount_in_text(text: str) -> int | None:
+    """Сумма внутри фразы: «рассрочку на 310к платить не могу» — клиент назвал цифру, хотя слов много."""
+    match = _AMOUNT_WITH_UNIT.search(text)
+    if not match:
+        return None
+    number = float(re.sub(r"\s", "", match.group(1)) + (match.group(2) or "").replace(",", "."))
+    unit = match.group(3).lower()
+    if unit.startswith(("млн", "милл")):
+        number *= 1_000_000
+    elif unit.startswith(("тыс", "т", "к", "k", "руб", "р", "₽")):
+        number *= 1_000 if not unit.startswith(("руб", "р", "₽")) or number < 1_000 else 1
+    if number < 1_000:
+        return None
+    return clean_debt(round(number))
 
 
 def parse_amount(text: str) -> int | None:

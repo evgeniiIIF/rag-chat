@@ -60,3 +60,19 @@ def test_info_query_depends_on_the_failed_filter() -> None:
     assert search_query("info", "320 тысяч", ClientProfile(debt_amount=320_000)) == INFO_QUERIES["debt"]
     assert search_query("info", "Чечня", ClientProfile(region="Чечня")) == INFO_QUERIES["region"]
     assert search_query("info", "ну и что", ClientProfile()) == "ну и что"
+
+
+def test_client_topic_is_added_to_the_step_query() -> None:
+    """На сборе данных ищем тему шага и то, о чём клиент написал: иначе отвечаем не на то."""
+    query = search_query("ask_debt", "имущество есть, платить нечем", ClientProfile())
+
+    assert query.startswith(STEP_QUERIES["ask_debt"])
+    assert "имущество" in query
+
+
+def test_slot_values_are_not_a_search_topic() -> None:
+    """Сумма, телефон и «ну и что» темой не считаются."""
+    profile = ClientProfile()
+    assert search_query("ask_debt", "310 000", profile) == STEP_QUERIES["ask_debt"]
+    assert search_query("ask_debt", "+7 999 666-55-44", profile) == STEP_QUERIES["ask_debt"]
+    assert search_query("ask_region", "ну и что", profile) == STEP_QUERIES["ask_region"]

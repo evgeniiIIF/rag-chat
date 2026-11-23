@@ -17,7 +17,7 @@ def test_settings_reads_env_and_defaults(monkeypatch: pytest.MonkeyPatch) -> Non
     settings = Settings()  # type: ignore[call-arg]  # поля читаются из env
 
     assert settings.api_key.get_secret_value() == "test-key"
-    assert settings.retriever_k == 3
+    assert settings.retriever_k == 5
     assert settings.score_threshold == 0.35
     assert settings.data_dir.parent.name == "backend"
 

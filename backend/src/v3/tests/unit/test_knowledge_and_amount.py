@@ -51,6 +51,17 @@ def test_operator_instructions_are_not_knowledge() -> None:
     assert knowledge_text("Главная задача — успокоить клиента и продать юриста.") == ""
 
 
+def test_consultant_checklist_is_not_knowledge() -> None:
+    """Чек-лист для консультанта («на консультации важно держать фокус…») клиенту не отправляем."""
+    text = (
+        "На консультации важно держать фокус на нескольких вещах:\n"
+        "какие долги есть и перед кем;\n"
+        "есть ли имущество, ипотека, залог, автомобиль;"
+    )
+
+    assert knowledge_text(text, "какие отдельные договоры") == ""
+
+
 def test_case_tails_are_not_knowledge() -> None:
     assert knowledge_text("от Яндекса награду Хорошее место. Это не нужно зачитывать.") == ""
     assert knowledge_text("женщина, которая пыталась пройти МФЦ. Заявление вернули.") == ""

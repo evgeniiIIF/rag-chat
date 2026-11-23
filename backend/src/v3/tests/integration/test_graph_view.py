@@ -27,7 +27,7 @@ def make_graph(artifacts_dir: Path) -> Any:
         return []
 
     def answer(prompt: Prompt) -> AnswerDraft:
-        return AnswerDraft(summary="Ответ.")
+        return AnswerDraft(text="Ответ.")
 
     return build_graph(search=search, answer_fn=answer, threshold=0.35, artifacts_dir=artifacts_dir)
 

@@ -55,7 +55,7 @@ class FakeAnswer:
     def __call__(self, prompt: Any) -> AnswerDraft:
         self.stages.append(prompt.stage)
         self.prompts.append(prompt)
-        return AnswerDraft(summary=f"Ответ на шаге {prompt.stage}.")
+        return AnswerDraft(text=f"Ответ на шаге {prompt.stage}.")
 
 
 def make_service(tmp_path: Path, *, score: float = 0.9) -> tuple[ChatService, FakeIntake, FakeAnswer]:

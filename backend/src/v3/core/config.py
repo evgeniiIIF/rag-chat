@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # читаемый снимок нарезки: пишется при сборке индекса, лежит рядом с документацией
     chunks_doc: Path = CHUNKS_DOC_DEFAULT
 
-    retriever_k: int = Field(default=3, ge=1, le=10)
+    retriever_k: int = Field(default=5, ge=1, le=10)
     score_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
 
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)

@@ -46,7 +46,7 @@ class FakeAnswer:
 
     def __call__(self, prompt: Prompt) -> AnswerDraft:
         self.prompts.append(prompt)
-        return AnswerDraft(summary=f"Ответ на шаге {prompt.stage}.")
+        return AnswerDraft(text=f"Ответ на шаге {prompt.stage}.")
 
 
 def make_graph(tmp_path: Path, intake: FakeIntake, answer: FakeAnswer, *, score: float = 0.9) -> Any:
@@ -135,7 +135,7 @@ def test_one_failed_filter_skips_the_next_question(tmp_path: Path) -> None:
 
     assert result["step"] == "info"
     assert result["profile"].region is None
-    assert "не предлагай консультацию" in answer.prompts[0].system.lower()
+    assert "консультацию не предлагай" in answer.prompts[0].system.lower()
 
 
 def test_info_step_searches_by_the_failed_filter(tmp_path: Path) -> None:
@@ -148,7 +148,7 @@ def test_info_step_searches_by_the_failed_filter(tmp_path: Path) -> None:
     assert result["step"] == "info"
     # фильтр провален по долгу: ищем, что предложить вместо процедуры
     assert result["search_query"] == INFO_QUERIES["debt"]
-    assert "не предлагай консультацию" in answer.prompts[0].system.lower()
+    assert "консультацию не предлагай" in answer.prompts[0].system.lower()
 
 
 def test_booked_step_confirms(tmp_path: Path) -> None:

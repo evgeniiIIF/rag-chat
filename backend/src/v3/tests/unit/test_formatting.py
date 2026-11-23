@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.formatting import answer_text, enforce_style, normalize_answer, strip_source_refs
+from core.formatting import answer_text, enforce_style, knowledge_text, normalize_answer, strip_source_refs
 from domain.profile import ClientProfile
 
 
@@ -92,3 +92,90 @@ def test_explanation_survives_when_model_ends_with_step_question() -> None:
     assert "кредиты, займы, рассрочки, налоги, ЖКХ" in text
     assert text.endswith(ask)
     assert text.count("какая у вас общая сумма долга") == 1
+
+
+def test_past_tense_note_about_self_is_dropped() -> None:
+    """«Извинился за лишние детали, объяснил, что…» — заметка, а не ответ клиенту."""
+    text = answer_text(
+        "Извинился за лишние детали, объяснил, что рассрочки списываются, и подвёл к сумме.",
+        [],
+        "",
+        "ask_debt",
+        ask="Подскажите, пожалуйста, какая у вас общая сумма долга?",
+    )
+
+    assert "извинил" not in text.lower()
+    assert text == "Подскажите, пожалуйста, какая у вас общая сумма долга?"
+
+
+def test_action_promise_is_dropped() -> None:
+    """«Уточню это по вашей прописке и вернусь с ответом» — обещание, которого не будет."""
+    text = answer_text(
+        "Уточню это по вашей прописке и вернусь с ответом.",
+        [],
+        "",
+        "ask_region",
+        ask="Подскажите, пожалуйста, в каком регионе вы прописаны?",
+    )
+
+    assert "уточню" not in text.lower()
+    assert text == "Подскажите, пожалуйста, в каком регионе вы прописаны?"
+
+
+def test_knowledge_is_filtered_by_the_client_topic() -> None:
+    """Спросили про долги — ветка про имущество супруга в контекст не попадает."""
+    text = (
+        "В судебном банкротстве списываются кредиты, карты и рассрочки. "
+        "Имущество супруга, купленное в браке, тоже может попасть в процедуру."
+    )
+
+    kept = knowledge_text(text, "какие долги списываются")
+
+    assert "списываются" in kept
+    assert "супруг" not in kept
+
+
+def test_long_catalogue_is_trimmed_to_three_items() -> None:
+    """Каталог из знаний сжимается: клиент получает суть, а не выписку из документа."""
+    text = (
+        "В банкротстве списываются потребительские кредиты, кредитные карты, микрозаймы, "
+        "товарные рассрочки, автокредиты, долги по ЖКХ, налоги, пени и штрафы."
+    )
+
+    answer = answer_text(text, [], "", "ask_debt", ask="")
+
+    assert "потребительские кредиты" in answer
+    assert "микрозаймы" in answer
+    assert "и другие обязательства" in answer
+    assert "автокредиты" not in answer
+
+
+def test_description_of_the_reply_is_dropped() -> None:
+    """Живой случай: модель прислала описание ответа вместо ответа."""
+    plan = (
+        "Клиент раздражён и упрекает в непонятных словах про договоры. "
+        "Нужно коротко по-человечески откликнуться, затем объяснить, что отдельные договоры — "
+        "это кредиты, карты и займы, и подвести к вопросу о сумме."
+    )
+
+    assert answer_text(plan, [], "", "ask_debt", ask="") == ""
+
+
+def test_reply_plan_with_a_modal_verb_is_dropped() -> None:
+    """«Ответ клиенту, который раздражён…» — тоже план, а не речь клиенту."""
+    plan = (
+        "Ответ клиенту, который раздражён и не понял про отдельные договоры: "
+        "короткий человеческий отклик и вопрос о сумме долга."
+    )
+
+    assert answer_text(plan, [], "", "ask_debt", ask="") == ""
+
+
+def test_live_consultant_speech_survives_the_filter() -> None:
+    """Настоящая речь консультанта не вырезается, даже если в ней есть инфинитивы."""
+    text = (
+        "Понимаю, вопрос неприятный. Общая сумма — это все ваши обязательства вместе: "
+        "кредиты, карты и займы. Скажите, пожалуйста, сколько всего получается."
+    )
+
+    assert answer_text(text, [], "", "ask_debt", ask="").startswith("Понимаю")

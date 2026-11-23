@@ -8,7 +8,7 @@ from langchain_core.messages import BaseMessage
 
 from domain.graph_state import GraphState
 from domain.profile import ClientProfile
-from graph.nodes.extract import make_extract_node
+from graph.nodes.extract import _apply_expected, make_extract_node
 from infrastructure.llm import IntakeDraft
 
 
@@ -70,3 +70,59 @@ def test_question_kind_is_passed_through() -> None:
     result = node(make_state("сколько стоит процедура?"))
 
     assert result["kind"] == "question"
+
+
+def test_region_is_not_taken_from_a_request_phrase() -> None:
+    # бот уже отказал по «чечня»; следующая реплика — просьба, а не новый регион
+    node = make_extract_node(FakeIntake(IntakeDraft(kind="situation")))
+    profile = ClientProfile(debt_amount=500_000, region="чечня")
+
+    result = node(make_state("консультацию давай", profile))
+
+    assert result["profile"].region == "чечня"
+    assert result["profile"].failed_filter() == "region"
+
+
+def test_region_changes_when_client_names_another_one() -> None:
+    # новое значение приходит от модели и применяется на любом шаге, в том числе после отказа
+    node = make_extract_node(FakeIntake(IntakeDraft(kind="situation", region="Дагестан")))
+    profile = ClientProfile(debt_amount=500_000, region="чечня")
+
+    result = node(make_state("в дагестане прописан", profile))
+
+    assert result["profile"].region == "Дагестан"
+    assert result["profile"].failed_filter() is None
+
+
+def test_reply_words_do_not_overwrite_known_region() -> None:
+    # «просрочки» — это факт, а не регион: бот регион уже спросил и получил «чечня»
+    node = make_extract_node(FakeIntake(IntakeDraft(kind="situation")))
+    profile = ClientProfile(debt_amount=500_000, region="чечня")
+
+    result = node(make_state("просрочки", profile))
+
+    assert result["profile"].region == "чечня"
+
+
+def test_amount_in_a_phrase_counts_when_the_sum_was_asked() -> None:
+    """Бот спросил сумму — «рассрочку на 310к платить не могу» это и есть ответ."""
+    draft = _apply_expected(
+        ClientProfile(),
+        "рассрочку на 310к платить уже не могу",
+        IntakeDraft(kind="situation"),
+        expected="debt",
+    )
+
+    assert draft.debt_amount == 310_000
+
+
+def test_side_amount_is_not_the_total_debt() -> None:
+    """Регион спросили — сумма из попутной фразы общим долгом не становится."""
+    draft = _apply_expected(
+        ClientProfile(),
+        "рассрочка на 310к тяжёлая, прописан в Москве",
+        IntakeDraft(kind="situation"),
+        expected="region",
+    )
+
+    assert draft.debt_amount is None

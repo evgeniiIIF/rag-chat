@@ -5,18 +5,25 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import cast
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from core.behavior import SYSTEM_PROMPT, booked_text
+from core.behavior import STAGE_INSTRUCTIONS, SYSTEM_PROMPT, booked_text
 from core.formatting import answer_text, build_blocks, enforce_style
 from domain.graph_state import GraphState
 from domain.models import RetrievedChunk
-from domain.profile import ClientProfile, extract_phone, extract_time, is_excluded_region, normalize_phone
+from domain.profile import (
+    ClientProfile,
+    extract_phone,
+    extract_time,
+    is_excluded_region,
+    normalize_phone,
+    normalize_time,
+)
 from domain.scenario import expected_slot
 from graph.nodes.answer import make_answer_node
 from graph.nodes.extract import make_extract_node
 from graph.nodes.retrieve import make_retrieve_node
-from infrastructure.llm import AnswerDraft, IntakeDraft
+from infrastructure.llm import AnswerDraft, IntakeDraft, build_prompt
 
 QUALIFIED = ClientProfile(debt_amount=899_000, region="Дагестан")
 
@@ -159,14 +166,15 @@ def test_internal_note_is_not_sent_to_client() -> None:
     assert text == "Подскажите, пожалуйста, удобное время для звонка."
 
 
-def test_installment_amount_is_not_the_total_debt() -> None:
+def test_installment_amount_is_the_total_debt_when_asked() -> None:
+    """Бот спросил сумму — «именно рассрочку на 310к платить уже не могу» это и есть ответ."""
     profile = run(
         "я в целом с долгами справляюсь, но именно рассрочку на 310к платить уже не могу",
         IntakeDraft(kind="situation", debt_amount=310_000),
         ClientProfile(),
     )
 
-    assert profile.debt_amount is None
+    assert profile.debt_amount == 310_000
 
 
 def test_amount_named_as_debt_is_the_total_debt() -> None:
@@ -230,7 +238,7 @@ def answer_for(step_profile: ClientProfile, draft: AnswerDraft, kind: str = "que
 
 def test_info_answer_comes_from_code_not_from_model_plan() -> None:
     """Модель на info выдавала план («Ничего не гарантировать…») — клиент получает текст кода."""
-    draft = AnswerDraft(summary="Клиент спрашивает про отказ, надо пояснить и упомянуть МФЦ. Без вопросов.")
+    draft = AnswerDraft(text="Клиент спрашивает про отказ, надо пояснить и упомянуть МФЦ. Без вопросов.")
     text = answer_for(ClientProfile(debt_amount=310_000), draft)
 
     assert "350 000" in text
@@ -242,7 +250,7 @@ def test_info_answer_comes_from_code_not_from_model_plan() -> None:
 
 def test_answer_schema_has_no_plan_fields() -> None:
     """Полей под план и заметки в схеме нет: их нечем показать клиенту."""
-    assert set(AnswerDraft.model_fields) == {"summary", "question"}
+    assert set(AnswerDraft.model_fields) == {"text", "question"}
 
 
 def test_answer_description_is_not_sent_to_client() -> None:
@@ -256,9 +264,9 @@ def test_plan_instead_of_answer_is_retried_and_replaced() -> None:
     """Первая попытка = план, вторая = текст: клиент получает текст, а не описание."""
     drafts = iter(
         [
-            AnswerDraft(summary="Ответ с тёплым откликом и одним вопросом о сумме. 2–3 предложения."),
+            AnswerDraft(text="Ответ с тёплым откликом и одним вопросом о сумме. 2–3 предложения."),
             AnswerDraft(
-                summary="Рассрочка 310 тысяч — это заметная нагрузка, но для процедуры важна общая сумма "
+                text="Рассрочка 310 тысяч — это заметная нагрузка, но для процедуры важна общая сумма "
                 "по всем кредиторам: банки, МФО, налоги, ЖКХ.",
                 question="Какая у вас общая сумма долга?",
             ),
@@ -288,10 +296,11 @@ def test_plan_residue_is_not_shown_to_client() -> None:
 
 
 def test_prompt_asks_for_business_tone_and_topic_answer() -> None:
-    assert "Конечно" in SYSTEM_PROMPT  # запрет на панибратство сформулирован явно
     assert "деловым языком" in SYSTEM_PROMPT
-    assert "говори по теме реплики" in SYSTEM_PROMPT
-    assert "с какого года работает" in SYSTEM_PROMPT
+    assert "третьем лице" in SYSTEM_PROMPT
+    # логика шагов живёт в коде: правил-фильтров и регалий компании в промпте нет
+    assert "с какого года работает" not in SYSTEM_PROMPT
+    assert "фильтр" not in SYSTEM_PROMPT.lower()
 
 
 def test_booking_text_invites_to_fix_wrong_data() -> None:
@@ -299,3 +308,252 @@ def test_booking_text_invites_to_fix_wrong_data() -> None:
 
     assert "+79991234567" in text
     assert "поправлю" in text
+
+
+def test_failed_filter_blocks_booking_and_consultation() -> None:
+    """Даже с телефоном и временем отказ по фильтру остаётся отказом: записи нет."""
+    profile = ClientProfile(debt_amount=500_000, region="чечня", phone="66-68-89", consultation_time="в 14")
+    draft = AnswerDraft(text="Записываю вас на консультацию, юрист позвонит.", question="")
+
+    result = make_answer_node(lambda prompt: draft)(GraphState(question="просрочки", profile=profile))
+
+    assert result["step"] == "info"
+    assert result["answer_booking"] is None
+    assert "консультац" not in str(result["answer"]).lower()
+
+
+def test_one_line_answer_description_is_retried() -> None:
+    """«Ответ клиенту про общую сумму долга…» — описание, а не текст: просим ответ заново."""
+    drafts = iter(
+        [
+            AnswerDraft(text="Ответ клиенту про общую сумму долга при наличии ипотеки и рассрочки"),
+            AnswerDraft(
+                text=(
+                    "С ипотекой процедура возможна, но требования по кредиту остаются залоговыми. "
+                    "В общую сумму входит всё: кредиты, займы, налоги, ЖКХ."
+                )
+            ),
+        ]
+    )
+    state = GraphState(question="рассрочку на 310к платить не могу", profile=ClientProfile())
+
+    result = make_answer_node(lambda prompt: next(drafts))(state)
+
+    assert "ипотек" in str(result["answer"]).lower()
+    assert "Ответ клиенту" not in str(result["answer"])
+
+
+def test_notes_about_client_are_retried_twice_then_code_explains() -> None:
+    """Модель дважды писала «Клиент сообщил…» — клиент получает объяснение по знаниям, не голый вопрос."""
+    drafts = iter(
+        [
+            AnswerDraft(text="Клиент сообщил о рассрочке 310 тыс., которую не может платить."),
+            AnswerDraft(text="Клиент не может платить рассрочку, общая сумма долга не названа."),
+            AnswerDraft(text="Клиент ждёт вопрос о сумме долга."),
+        ]
+    )
+    state = GraphState(question="рассрочку на 310к платить не могу", profile=ClientProfile())
+
+    result = make_answer_node(lambda prompt: next(drafts))(state)
+
+    answer = str(result["answer"]).lower()
+    assert "общая сумма обязательств" in answer
+    assert "клиент" not in answer
+    assert result["answer_question"] == "Подскажите, пожалуйста, какая у вас общая сумма долга?"
+
+
+def test_internal_refusal_note_is_replaced_by_code_text() -> None:
+    """Служебная строка «Отказ по сумме… ниже порога…» до клиента не доходит: объясняет код."""
+    draft = AnswerDraft(text="Отказ по сумме долга, 310 000 ₽ ниже порога 350 000 ₽; предложить МФЦ.")
+    text = answer_for(ClientProfile(debt_amount=310_000), draft)
+
+    assert "порог" not in text
+    assert "350 000" in text
+    assert "МФЦ" in text
+
+
+def test_system_prompt_is_short_and_forbids_sources() -> None:
+    """Промпт задаёт только тон и запрет на источники: логика шагов живёт в коде."""
+    from core.behavior import SYSTEM_PROMPT
+
+    assert "источник" in SYSTEM_PROMPT
+    assert len(SYSTEM_PROMPT) < 1800
+    assert "фильтр" not in SYSTEM_PROMPT.lower()
+
+
+def test_reminder_to_ask_question_is_not_shown() -> None:
+    """«В конце задать вопрос об общей сумме долга.» — заметка себе, клиенту она не уходит."""
+    drafts = iter([AnswerDraft(text="В конце задать вопрос об общей сумме долга.")] * 3)
+    state = GraphState(question="рассрочку платить не могу", profile=ClientProfile(), kind="situation")
+
+    result = make_answer_node(lambda prompt: next(drafts))(state)
+
+    assert "в конце" not in str(result["answer"]).lower()
+    assert "задать вопрос" not in str(result["answer"]).lower()
+    # вместо заметки клиент получает объяснение по знаниям и вопрос шага
+    assert "общая сумма обязательств" in str(result["answer"]).lower()
+    assert result["answer_question"] == "Подскажите, пожалуйста, какая у вас общая сумма долга?"
+
+
+def test_no_instruction_line_is_sent_to_model() -> None:
+    """Промпт не содержит задания «что сказать в конце»: модель его переписывала в ответ."""
+    prompt = build_prompt(step="ask_debt", profile=ClientProfile(), question="рассрочку не могу", ask="сумма?")
+
+    sent = "\n".join(str(message.content) for message in prompt.messages).lower()
+    assert "вопрос, который нужно задать" not in sent
+    assert "в конце" not in sent
+    assert prompt.inputs["вопрос шага"] == "сумма?"
+
+
+def test_task_verbs_anywhere_in_a_sentence_are_dropped() -> None:
+    """Любая фраза-задание («Далее спросить…», «В конце задать вопрос…») вырезается."""
+    draft = AnswerDraft(
+        text=(
+            "Рассрочка на 310 тысяч входит в общую сумму долга. "
+            "Далее спросить про регион. Затем предложить консультацию. "
+            "В конце задать вопрос об общей сумме долга."
+        )
+    )
+
+    text = answer_for(ClientProfile(), draft, kind="situation")
+
+    for leak in ["спросить", "предложить", "задать", "в конце"]:
+        assert leak not in text.lower(), leak
+    assert "310 тысяч" in text
+
+
+def test_answer_follows_consultant_formula() -> None:
+    """Формула эталона: отклик → объяснение по материалам → мостик к вопросу."""
+    from core.behavior import STAGE_INSTRUCTIONS, SYSTEM_PROMPT
+
+    assert "короткий отклик" in SYSTEM_PROMPT
+    assert "подведи клиента к вопросу" in SYSTEM_PROMPT
+    assert "3–5 предложений" in SYSTEM_PROMPT
+    assert "откликнись" in STAGE_INSTRUCTIONS["ask_debt"]
+    assert "подведи к вопросу" in STAGE_INSTRUCTIONS["ask_debt"]
+
+
+def test_repeated_refusal_becomes_advice() -> None:
+    """Клиент переспросил «и что делать» — вместо того же абзаца бот объясняет шаги."""
+    first = answer_for(ClientProfile(debt_amount=310_000), AnswerDraft(text=""), kind="situation")
+    state = GraphState(question="и что делать", profile=ClientProfile(debt_amount=310_000), kind="situation")
+    state.messages += [
+        HumanMessage(content="310к всего"),
+        AIMessage(content=first),
+        HumanMessage(content="и что делать"),
+    ]
+
+    result = make_answer_node(lambda prompt: AnswerDraft())(state)
+
+    assert "МФЦ" in str(result["answer"])
+    assert first.split(".")[0] not in str(result["answer"])
+
+
+def test_same_paragraph_is_not_sent_twice() -> None:
+    """Тот же ответ второй раз не отправляем: просим модель сказать другое."""
+    same = "Рассрочка на 310 тысяч входит в общую сумму долга вместе с остальными обязательствами."
+    drafts = iter([AnswerDraft(text=same), AnswerDraft(text=same)])
+    state = GraphState(question="310к всего", profile=ClientProfile(), kind="situation")
+    state.messages += [AIMessage(content=same), HumanMessage(content="310к всего")]
+
+    result = make_answer_node(lambda prompt: next(drafts))(state)
+
+    assert same not in str(result["answer"])
+
+
+def test_regalia_are_not_used_as_argument() -> None:
+    """«Работаем в 63 субъектах, провели 2500 процедур» — регалии, клиенту они не аргумент."""
+    draft = AnswerDraft(
+        text=(
+            "Регион нужен, чтобы проверить, работаем ли мы с ним. "
+            "Мы работаем в 63 субъектах РФ и провели больше 2500 процедур. "
+            "Подскажите, где вы прописаны?"
+        )
+    )
+
+    text = answer_for(ClientProfile(), draft, kind="situation")
+
+    assert "63" not in text
+    assert "2500" not in text
+
+
+def test_answer_starts_with_a_separate_response_paragraph() -> None:
+    """Отклик и объяснение — разными абзацами, как в эталонном чате."""
+    draft = AnswerDraft(
+        text=(
+            "Понял вас: остальные обязательства тянете, а рассрочка стала неподъёмной. "
+            "Для процедуры нужна общая сумма долга. "
+            "В неё входят кредиты, займы и налоги."
+        )
+    )
+
+    text = answer_for(ClientProfile(), draft, kind="situation")
+
+    assert "\n\n" in text
+    assert text.split("\n\n")[0].startswith("Понял вас")
+
+
+def test_info_names_the_real_reason_for_refusal() -> None:
+    """Модель сказала «по сумме препятствий нет» и промолчала про регион — причину называет код."""
+    draft = AnswerDraft(
+        text=(
+            "По сумме долга препятствий нет: сумма выше порога. "
+            "Остаётся проверить регион, и от него зависит, сможем ли мы взяться за дело."
+        )
+    )
+    profile = ClientProfile(debt_amount=500_000, region="Чечня")
+
+    text = answer_for(profile, draft, kind="situation")
+
+    assert "не проводит банкротство" in text or "не работает" in text
+
+
+def test_info_answer_with_named_reason_is_kept() -> None:
+    """Если причина названа, ответ модели не подменяем."""
+    draft = AnswerDraft(
+        text=(
+            "В вашем регионе компания не проводит банкротство физлиц. "
+            "Банкротство привязано к месту прописки, поэтому дело мы не возьмём."
+        )
+    )
+
+    text = answer_for(ClientProfile(debt_amount=500_000, region="Чечня"), draft, kind="situation")
+
+    assert "в вашем регионе" in text.lower()
+    assert "если прописка или ситуация изменится" not in text.lower()
+
+
+def test_prompt_forbids_asking_again_what_is_known() -> None:
+    """Данные, которые клиент уже назвал, второй раз не спрашиваем."""
+    assert "не переспрашивай" in SYSTEM_PROMPT.lower()
+
+
+def test_practice_example_is_used_to_explain() -> None:
+    """Пример из практики — короткой фразой, чтобы ответ не был сухим."""
+    assert "пример" in SYSTEM_PROMPT.lower()
+
+
+def test_instruction_about_the_system_never_reaches_the_client() -> None:
+    """«Телефон и предложение записи не писать — это делает система» — служебная строка."""
+    text = answer_text(
+        "Телефон и предложение записи не писать — это делает система.",
+        [],
+        "",
+        "invite",
+        ask="Напишите, пожалуйста, ваш телефон и удобное время для звонка.",
+    )
+
+    assert "систем" not in text.lower()
+    assert text.strip() == "Напишите, пожалуйста, ваш телефон и удобное время для звонка."
+
+
+def test_stage_instructions_do_not_talk_about_the_system() -> None:
+    """Модель копирует служебные оговорки дословно — в инструкциях их быть не должно."""
+    for step, instruction in STAGE_INSTRUCTIONS.items():
+        assert "систем" not in instruction.lower(), step
+
+
+def test_time_with_a_word_is_normalized() -> None:
+    """«10 утра» в записи выглядит как «10:00», а не как реплика клиента."""
+    assert normalize_time("10 утра") == "10:00"
+    assert normalize_time("10 вечера") == "22:00"

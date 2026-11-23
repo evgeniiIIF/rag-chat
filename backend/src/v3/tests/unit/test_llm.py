@@ -26,8 +26,8 @@ def test_prompt_has_role_step_and_question() -> None:
     prompt = build_prompt(step="ask_debt", profile=ClientProfile(), question="хочу списать долги")
 
     assert isinstance(prompt, Prompt)
-    assert "ассистент компании по банкротству" in prompt.system
-    assert "общую сумму долга" in prompt.system
+    assert "консультант компании по банкротству" in prompt.system
+    assert "общую сумму" in prompt.system
     assert prompt.messages[0].type == "system"
     assert isinstance(prompt.messages[-1], HumanMessage)
     assert "хочу списать долги" in str(prompt.messages[-1].content)
@@ -80,7 +80,7 @@ def test_answer_fn_returns_text_and_records_call() -> None:
 
     class FakeStructured:
         def invoke(self, messages: list[Any]) -> AnswerDraft:
-            return AnswerDraft(summary="Ответ модели.")
+            return AnswerDraft(text="Ответ модели.")
 
     class FakeModel:
         def with_structured_output(self, schema: Any) -> FakeStructured:
@@ -93,6 +93,6 @@ def test_answer_fn_returns_text_and_records_call() -> None:
     with capture(trace):
         draft = answer(prompt)
 
-    assert draft.summary == "Ответ модели."
+    assert draft.text == "Ответ модели."
     assert trace.calls[0].purpose == "answer:ask_debt"
     assert trace.calls[0].messages[0].role == "system"

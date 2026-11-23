@@ -43,7 +43,7 @@ def make_service(tmp_path: Path, *, score: float = 0.9) -> ChatService:
         return [RetrievedChunk(chunk=make_chunk(), score=score, rank=1)]
 
     def answer(prompt: Prompt) -> AnswerDraft:
-        return AnswerDraft(summary="В процедуру берут с суммой от 350 000 ₽.")
+        return AnswerDraft(text="В процедуру берут с суммой от 350 000 ₽.")
 
     def intake(question: str, history: Sequence[BaseMessage]) -> IntakeDraft:
         # фильтры уже собраны: вопрос клиента уходит в ответ по знаниям, а не в сбор данных
@@ -119,7 +119,7 @@ def test_lifespan_builds_service_from_index(monkeypatch: pytest.MonkeyPatch, tmp
             return [RetrievedChunk(chunk=make_chunk(), score=0.9, rank=1)]
 
     def fake_answer(prompt: Prompt) -> AnswerDraft:
-        return AnswerDraft(summary="В процедуру берут с суммой от 350 000 ₽.")
+        return AnswerDraft(text="В процедуру берут с суммой от 350 000 ₽.")
 
     monkeypatch.setattr("main.IndexService", FakeIndex)
     monkeypatch.setattr("main.build_answer_fn", lambda model: fake_answer)

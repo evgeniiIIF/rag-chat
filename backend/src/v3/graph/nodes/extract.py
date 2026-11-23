@@ -15,6 +15,7 @@ from langchain_core.messages import BaseMessage
 from domain.graph_state import GraphState
 from domain.profile import (
     ClientProfile,
+    amount_in_text,
     clean_debt,
     clean_region,
     extract_phone,
@@ -39,8 +40,29 @@ _DEBT_AROUND = re.compile(
     r"(?i)(?:долг\w*|задолженност\w*|сумм\w*)[^\d.!?]{0,15}\d"
     r"|\d[^\d.!?]{0,15}(?:долг\w*|задолженност\w*|сумм\w*)"
 )
+# сумма внутри фразы: «рассрочку на 310к платить не могу» — клиент назвал цифру
+_AMOUNT_IN_TEXT = re.compile(r"(?i)(?:\d{1,3}(?:\s\d{3})+|\d+)\s*(?:тыс\w*|к\b|k\b|млн\w*|миллион\w*|руб\w*|р\.|₽)")
 _PURE_PHONE = re.compile(r"[\d\s\-+()]*\d[\d\s\-+()]*")
 _HOUR_ONLY = re.compile(r"\d{1,2}")
+# регион — короткое название, а не фраза-просьба: «консультацию давай» регионом не становится
+_REGION_WORD = re.compile(r"^[а-яё][а-яё\s\-.]*$", re.IGNORECASE)
+_REGION_STOP = re.compile(
+    r"(?i)давай|дайте|хочу|можно|надо|нужно|подскаж|скаж|спас|привет|здравств"
+    r"|консультац|банкрот|долг|сумм|телефон|время|запис"
+)
+# слова-обёртки вокруг названия региона: «я прописан в Дагестане» → «Дагестане»
+_REGION_NOISE = re.compile(
+    r"(?i)\b(?:я|мы|вы|в|во|на|из|регион|регионе|город|городе|прописан\w*|проживаю|живу|это|там)\b"
+)
+
+
+def _region_from_text(text: str) -> str:
+    """Регион из реплики клиента: только когда он назвал именно регион, а не попросил консультацию."""
+    flat = " ".join(text.split()).strip(" .,;:!?")
+    if not flat or _REGION_STOP.search(flat):
+        return ""
+    words = [word for word in _REGION_NOISE.sub(" ", flat).split() if len(word) > 2]
+    return " ".join(words) if 0 < len(words) <= 3 else ""
 
 
 def _drop_slot_facts(facts: dict[str, str]) -> dict[str, str]:
@@ -87,10 +109,14 @@ def _apply_expected(
         update = {"consultation_time": f"{int(text):02d}:00", "kind": "situation"}
     else:
         amount = parse_amount(text)
-        region = clean_region(text)
+        if amount is None and expected == "debt":  # бот спросил сумму — берём цифру из фразы
+            amount = amount_in_text(text)
+        region = clean_region(_region_from_text(text))
         if amount is not None:
             update = {"debt_amount": amount, "kind": "situation"}
-        elif expected == "region" and draft.region is None and region is not None:
+        elif expected == "region" and draft.region is None and profile.region is None and region is not None:
+            # регион из сырого текста берём, только когда бот его и спросил: иначе «просрочки»
+            # затирают уже известный регион, фильтр перестаёт срабатывать и бот зовёт на консультацию
             update = {"region": region, "kind": "situation"}
     return draft.model_copy(update=update) if update else draft
 
@@ -105,6 +131,7 @@ def _debt_is_total(question: str, expected: str | None) -> bool:
     return (
         parse_amount(text) is not None
         or _DEBT_AROUND.search(text) is not None
+        or (expected == "debt" and _AMOUNT_IN_TEXT.search(text) is not None)
         or (expected == "debt" and len(text.split()) <= 4)
     )
 

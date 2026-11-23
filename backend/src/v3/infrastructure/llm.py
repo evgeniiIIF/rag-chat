@@ -71,7 +71,7 @@ class AnswerDraft(BaseModel):
     и не обещать списание») доходили до клиента. Один текст + вопрос — клиенту нечего чистить.
     """
 
-    summary: str = Field(default="", description=ANSWER_SUMMARY_HINT)
+    text: str = Field(default="", description=ANSWER_SUMMARY_HINT)
     question: str = Field(default="", description=ANSWER_QUESTION_HINT)
 
 
@@ -134,7 +134,7 @@ def build_prompt(
         SystemMessage(content=system),
         *kept,
         HumanMessage(
-            content=build_user_message(question=question, profile=profile, fragments=fragments, ask=ask, short=short),
+            content=build_user_message(question=question, profile=profile, fragments=fragments),
         ),
     ]
     return Prompt(
@@ -177,8 +177,8 @@ def _draft_from_text(model: BaseChatModel, prompt: Prompt) -> AnswerDraft:
         logger.exception("модель не ответила на шаге %s", prompt.stage)
         return AnswerDraft()
     text = content if isinstance(content, str) else ""
-    summary, points, question = parse_reply(text)
-    return AnswerDraft(summary=" ".join(part for part in [summary, *points] if part.strip()), question=question)
+    reply, points, question = parse_reply(text)
+    return AnswerDraft(text=" ".join(part for part in [reply, *points] if part.strip()), question=question)
 
 
 def build_answer_fn(model: BaseChatModel) -> AnswerFn:
