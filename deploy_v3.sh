@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# deploy_v3.sh — push → ssh → disk-preflight → build backend (v3) → up backend → health
-# деплоит ТОЛЬКО сервис backend (v3) из docker-compose.prod.yml: frontend и nginx не трогает
+# deploy_v3.sh — полная копия deploy.sh: push → ssh → disk-preflight → down → reset+clean
+#                → build --pull → up → health. Деплоит весь стек, backend собирается из src/v3.
 set -euo pipefail
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/cloud_ru}"
@@ -9,19 +9,18 @@ SSH_HOST="${SSH_HOST:-176.109.103.195}"
 REMOTE_DIR="${REMOTE_DIR:-rag-chat}"
 BRANCH="${BRANCH:-main}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
-BACKEND_PORT="${BACKEND_PORT:-8000}"
 DISK_CLEAN_THRESHOLD="${DISK_CLEAN_THRESHOLD:-85}"
 
 usage() {
   cat <<USAGE
-usage: ./deploy_v3.sh         # обычный запуск: только backend (v3)
+usage: ./deploy_v3.sh         # обычный запуск: весь стек (backend v3 + frontend + nginx)
   (флаги ниже — только для исключений)
   --no-push        не трогать git (локальные коммиты уже на origin)
   --branch <b>     git branch (default: main)
   --first          on VPS: cp .env.example .env if .env missing
-  --follow         после health-check: стрим docker compose logs -f backend
+  --follow         после health-check: стрим docker compose logs -f
 env:
-  SSH_KEY SSH_USER SSH_HOST REMOTE_DIR BRANCH COMPOSE_FILE BACKEND_PORT DISK_CLEAN_THRESHOLD
+  SSH_KEY SSH_USER SSH_HOST REMOTE_DIR BRANCH COMPOSE_FILE DISK_CLEAN_THRESHOLD
 USAGE
 }
 
@@ -72,14 +71,10 @@ log "ssh $SSH_USER@$SSH_HOST → remote deploy v3 (trace + лог на VPS)"
 ssh -i "$SSH_KEY" \
   -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
   "$SSH_USER@$SSH_HOST" bash -s -- \
-  "$REMOTE_DIR" "$BRANCH" "$COMPOSE_FILE" "$FIRST" "$DISK_CLEAN_THRESHOLD" "$FOLLOW" "$BACKEND_PORT" <<'REMOTE'
+  "$REMOTE_DIR" "$BRANCH" "$COMPOSE_FILE" "$FIRST" "$DISK_CLEAN_THRESHOLD" "$FOLLOW" <<'REMOTE'
 set -euo pipefail
 
 REMOTE_DIR="$1"; BRANCH="$2"; COMPOSE_FILE="$3"; FIRST="$4"; TH="$5"; FOLLOW="${6:-0}"
-BACKEND_PORT="${7:-8000}"
-SERVICE="backend"
-# порт наружу только для backend: compose-файл не правим, кладём рядом override
-OVERRIDE=".compose.v3.override.yml"
 
 DEPLOY_LOG_DIR="${DEPLOY_LOG_DIR:-$HOME/.ragchat-deploy/logs}"
 mkdir -p "$DEPLOY_LOG_DIR"
@@ -90,14 +85,12 @@ log()  { printf "  \033[1;36m▸\033[0m %s\n" "$*"; }
 ok()   { printf "  \033[1;32m✔\033[0m %s\n" "$*"; }
 warn() { printf "  \033[1;33m!\033[0m %s\n" "$*"; }
 
-compose() { docker compose -f "$COMPOSE_FILE" -f "$OVERRIDE" "$@"; }
-
 dump_diag() {
   [ -n "${COMPOSE_FILE:-}" ] && [ -f "${COMPOSE_FILE:-}" ] || return 0
-  echo "  ───── docker compose ps -a ($SERVICE) ─────"
-  compose ps -a "$SERVICE" 2>&1 | sed "s/^/    /" || true
-  echo "  ───── docker compose logs --tail=80 ($SERVICE) ─────"
-  compose logs --tail=80 "$SERVICE" 2>&1 | sed "s/^/    /" || true
+  echo "  ───── docker compose ps -a ─────"
+  docker compose -f "$COMPOSE_FILE" ps -a 2>&1 | sed "s/^/    /" || true
+  echo "  ───── docker compose logs --tail=80 ─────"
+  docker compose -f "$COMPOSE_FILE" logs --tail=80 2>&1 | sed "s/^/    /" || true
 }
 
 die()  { printf "  \033[1;31m✖\033[0m %s\n" "$*" >&2; dump_diag; exit 1; }
@@ -114,7 +107,7 @@ disk_mounts() {  # все реально используемые разделы
 disk_max_pct() { disk_mounts | awk '{gsub("%","",$2); if ($2+0>m) m=$2+0} END {print m}'; }
 disk_report()  { disk_mounts | sed "s/^/      /"; }
 
-cleanup_disk() {  # volumes НЕ трогаем — иначе снесётся chroma_db
+cleanup_disk() {  # volumes НЕ трогаем — иначе снесется chroma_db
   if [ "${1:-0}" = "1" ]; then
     warn "агрессивная чистка: builder-кэш + неиспользуемые образы + журнал + apt"
     docker builder prune -af >/dev/null 2>&1 || true
@@ -128,7 +121,7 @@ cleanup_disk() {  # volumes НЕ трогаем — иначе снесётся 
 }
 
 try_build() {
-  compose build --pull --progress=plain "$SERVICE" 2>&1 | stdbuf -oL sed -u "s/^/    /"
+  docker compose -f "$COMPOSE_FILE" build --pull --progress=plain 2>&1 | stdbuf -oL sed -u "s/^/    /"
 }
 build_with_retry() {
   try_build && return 0
@@ -137,11 +130,11 @@ build_with_retry() {
   disk_report
   try_build
 }
-disk_info() { df -h / | tail -1 | awk "{print \$3\" / \"\$2\" (\"$5\")\"}"; }
+disk_info() { df -h / | tail -1 | awk '{print $3" / "$2" ("$5")"}'; }
 
 echo "──────────────────────────────────────────────"
 echo " host: $(hostname) · dir: $REMOTE_DIR · branch: $BRANCH"
-echo " deploy: только $SERVICE (v3) · порт $BACKEND_PORT"
+echo " deploy: весь стек (backend v3 + frontend + nginx)"
 echo "──────────────────────────────────────────────"
 
 [ -n "$REMOTE_DIR" ] || die "REMOTE_DIR empty"
@@ -160,10 +153,15 @@ if [ "${P:-0}" -ge "$TH" ]; then
 fi
 ok "диск ок: $(disk_info)"
 
+log "down --remove-orphans"
+docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>&1 | sed "s/^/    /" || true
+ok "containers stopped"
+
 log "git fetch --prune · reset --hard · clean -fd (keep .env*)"
 git fetch --all --prune 2>&1 | sed "s/^/    /" || true
 git reset --hard "origin/$BRANCH" 2>&1 | sed "s/^/    /"
 git clean -fd -e .env -e .env.prod 2>&1 | sed "s/^/    /" || true
+rm -f .compose.v3.override.yml  # следы старой backend-only версии скрипта
 ok "code at $(git rev-parse --short HEAD) · $(git log -1 --pretty=%s)"
 
 if [ ! -f .env ]; then
@@ -176,27 +174,18 @@ if [ ! -f .env ]; then
 fi
 ok ".env present"
 
-log "override: только $SERVICE, порт $BACKEND_PORT → 8000"
-cat > "$OVERRIDE" <<YAML
-services:
-  $SERVICE:
-    ports:
-      - "$BACKEND_PORT:8000"
-YAML
-ok "override written: $OVERRIDE"
-
-log "build --pull $SERVICE (stream, авто-чистка + 1 повтор)"
+log "build --pull: backend (v3) + frontend + nginx, стрим, авто-чистка + 1 повтор"
 build_with_retry
-ok "image built"
+ok "images built"
 
-log "up -d --wait $SERVICE (nginx и frontend не трогаем)"
-compose up -d --wait --remove-orphans "$SERVICE" 2>&1 | sed "s/^/    /"
-ok "container started (compose --wait: healthcheck зелёный)"
+log "up -d --wait --remove-orphans"
+docker compose -f "$COMPOSE_FILE" up -d --wait --remove-orphans 2>&1 | sed "s/^/    /"
+ok "containers started (compose --wait: healthchecks зелёные)"
 
-log "health check"
+log "health check (nginx → /api/health → backend v3)"
 HITS=0
 for i in $(seq 1 40); do
-  if curl -fsS "http://localhost:$BACKEND_PORT/api/health" >/dev/null 2>&1; then
+  if curl -fsS "http://localhost/api/health" >/dev/null 2>&1; then
     ok "/api/health ok (attempt $i)"
     HITS=1
     break
@@ -207,17 +196,17 @@ done
 [ "$HITS" -eq 1 ] || die "health check failed after 40 tries (~120s, start_period=60s)"
 
 log "final state"
-compose ps "$SERVICE" 2>&1 | sed "s/^/    /"
+docker compose -f "$COMPOSE_FILE" ps 2>&1 | sed "s/^/    /"
 echo "    /: $(disk_info)"
 echo "    deploy log на VPS: $DEPLOY_LOG"
-[ "$FOLLOW" = "1" ] || echo "    логи v3: ssh -tt -i \$SSH_KEY \$SSH_USER@\$SSH_HOST \"cd $REMOTE_DIR && docker compose -f $COMPOSE_FILE -f $OVERRIDE logs -f $SERVICE\""
+[ "$FOLLOW" = "1" ] || echo "    все логи: ssh -tt -i \$SSH_KEY \$SSH_USER@\$SSH_HOST \"cd $REMOTE_DIR && docker compose -f $COMPOSE_FILE logs -f\""
 ok "deploy v3 done"
 
 if [ "$FOLLOW" = "1" ]; then
-  log "docker compose logs -f $SERVICE (Ctrl-C — выйти, деплой уже завершён)"
-  compose logs -f --tail=100 "$SERVICE"
+  log "docker compose logs -f (Ctrl-C — выйти, деплой уже завершён)"
+  docker compose -f "$COMPOSE_FILE" logs -f --tail=100
 fi
 REMOTE
 
-ok "deployed v3: http://$SSH_HOST:$BACKEND_PORT/api/health"
-echo "   logs: ssh -i $SSH_KEY $SSH_USER@$SSH_HOST \"cd $REMOTE_DIR && docker compose -f $COMPOSE_FILE -f .compose.v3.override.yml logs -f backend\""
+ok "deployed v3 (весь стек): http://$SSH_HOST/"
+echo "   logs: ssh -i $SSH_KEY $SSH_USER@$SSH_HOST \"cd $REMOTE_DIR && docker compose -f $COMPOSE_FILE logs -f\""
