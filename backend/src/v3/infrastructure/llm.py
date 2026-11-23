@@ -18,7 +18,6 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from core.behavior import (
-    ANSWER_POINTS_HINT,
     ANSWER_QUESTION_HINT,
     ANSWER_SUMMARY_HINT,
     CONDENSE_SYSTEM_PROMPT,

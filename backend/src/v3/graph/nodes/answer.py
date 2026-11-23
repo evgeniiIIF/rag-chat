@@ -1,14 +1,13 @@
 """Узел ответа: модель пишет реплику на каждом шаге, кроме подтверждения записи.
 
-Роль и тон задаёт `SYSTEM_PROMPT`, знания приходят абзацами из КЦ.docx (без пометок операторам
-и без кейсов других клиентов), вопрос шага дописывает код. Ответ собирает `answer_text`:
+Роль и тон задаёт `SYSTEM_PROMPT`, знания приходят абзацами из КЦ.docx целиком (примеры из практики
+тоже: модель объясняет ими правила), вопрос шага дописывает код. Ответ собирает `answer_text`:
 суть абзацем, пояснения списком, вопрос отдельным блоком. Вопрос шага модель получает готовым
 (`ASK_LINE`) и задаёт своими словами последним; подтверждение записи собирает код.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +35,7 @@ from domain.profile import ClientProfile
 from domain.scenario import CONTEXT_STEPS, next_step
 from graph.nodes import NodeFn, NodeResult
 from infrastructure.artifacts import write_json
-from infrastructure.llm import AnswerDraft, AnswerFn, build_prompt
+from infrastructure.llm import AnswerFn, build_prompt
 
 
 def _booking(profile: ClientProfile, step: str) -> dict[str, Any] | None:
@@ -56,39 +55,6 @@ def _clean_context(state: GraphState, step: str) -> list[Chunk]:
         if text:
             cleaned.append(hit.chunk.model_copy(update={"text": text}))
     return cleaned
-
-
-_NOISE = re.compile(r"[^\w\s]+")
-
-
-def _flat(text: str) -> str:
-    """Текст без пунктуации и регистра: так сравниваем дословные совпадения."""
-    return " ".join(_NOISE.sub(" ", text.lower()).split())
-
-
-# столько слов подряд, совпавших с абзацем знаний, уже считаем копипастой
-COPY_WINDOW = 7
-
-
-def _windows(text: str) -> set[str]:
-    words = _flat(text).split()
-    return {" ".join(words[index : index + COPY_WINDOW]) for index in range(len(words) - COPY_WINDOW + 1)}
-
-
-def _own_words(texts: list[str], fragments: list[Chunk]) -> list[str]:
-    """Только пересказ: поле, где есть кусок знаний подряд, выбрасываем."""
-    copied: set[str] = set()
-    for chunk in fragments:
-        copied |= _windows(chunk.text)
-    kept: list[str] = []
-    for text in texts:
-        words = _flat(text).split()
-        if len(words) < COPY_WINDOW:
-            continue
-        if _windows(text) & copied:
-            continue
-        kept.append(text)
-    return kept
 
 
 def _echo_of_prompt(text: str, prompts: list[str], *, ratio: float = 0.6) -> bool:
@@ -131,9 +97,6 @@ def make_answer_node(answer_fn: AnswerFn, artifacts_dir: Path | None = None) -> 
         draft = answer_fn(prompt)
         if _echo_of_prompt(draft.summary, [SYSTEM_PROMPT, STAGE_INSTRUCTIONS.get(step, "")]):
             draft = draft.model_copy(update={"summary": ""})
-        # пересказ вместо копипасты: поле с куском знаний подряд клиенту не отдаём
-        own = _own_words([draft.summary], context)
-        draft = draft.model_copy(update={"summary": " ".join(own or [draft.summary])})
         said = [str(message.content) for message in state.messages[:-1] if message.type == "ai"]
         text = answer_text(draft.summary, [], draft.question, step, ask=ask, said=said[-3:])
         if step == "info":

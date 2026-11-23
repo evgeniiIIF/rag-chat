@@ -12,7 +12,6 @@ from typing import Any
 
 from core.behavior import (
     ASK_STEPS,
-    CASE_CUT_RE,
     CLIENT_TALK_RE,
     MAX_POINTS,
     OPERATOR_LEAD_RE,
@@ -21,7 +20,6 @@ from core.behavior import (
     POINT_MAX,
     SELF_TALK_RE,
     SHORT_STEPS,
-    STORY_RE,
     SUMMARY_MAX,
     booked_text,
 )
@@ -154,7 +152,6 @@ def _client_voice(text: str, step: str = "") -> str:
         and not _NOTE_HEAD.search(sentence)
         and not _INTERNAL_NOTE.search(sentence)
         and not _PLAN_RESIDUE.search(sentence)
-        and not STORY_RE.search(sentence)
         and not (step == "info" and "?" in sentence)
         and not _META.search(sentence)
         and not _THIRD_PERSON.search(sentence)
@@ -231,11 +228,7 @@ def answer_text(
     # шаги сбора данных: клиенту ничего не объясняем, остаётся реплика и вопрос
     if step in SHORT_STEPS:
         points = []
-    items = [
-        _shorten(_client_voice(strip_source_refs(point), step))
-        for point in points
-        if point.strip() and not STORY_RE.search(point)
-    ]
+    items = [_shorten(_client_voice(strip_source_refs(point), step)) for point in points if point.strip()]
     items = [item for item in items if item]
     items = [item for item in items if not _repeat(item, head) and not _repeat(item, tail)]
     # клиент это уже слышал в прошлых ответах — второй раз не повторяем
@@ -304,10 +297,11 @@ def split_question(text: str) -> tuple[str, str]:
 
 
 def knowledge_text(text: str) -> str:
-    """Знания для клиента: без инструкций операторам и без кейсов других клиентов.
+    """Знания для клиента: без инструкций операторам, примеры из практики остаются.
 
     Режем по предложениям, а не абзац целиком: в одном абзаце рядом полезные факты и служебная
-    пометка вроде «это не нужно зачитывать». Кейс обрывает абзац — всё после него не отдаём.
+    пометка вроде «это не нужно зачитывать». Кейсы не вырезаем: модель объясняет по ним правила,
+    поэтому текст доходит целиком.
     """
     flat = " ".join(text.split())
     if not flat:
@@ -320,8 +314,6 @@ def knowledge_text(text: str) -> str:
     sentences[0] = OPERATOR_LEAD_RE.sub("", sentences[0])  # «правильно объяснять так:» — зачин для оператора
     kept: list[str] = []
     for sentence in sentences:
-        if CASE_CUT_RE.search(sentence) or STORY_RE.search(sentence):
-            break
         if OPERATOR_RE.search(sentence) or OPERATOR_SENTENCE_RE.search(sentence):
             continue
         if CLIENT_TALK_RE.search(sentence):
@@ -372,9 +364,9 @@ def dedupe_sentences(text: str) -> str:
 
 
 def clean_note(text: str, step: str = "") -> str:
-    """Оговорка клиенту: без ссылок на источник, служебных заметок и историй других клиентов."""
+    """Оговорка клиенту: без ссылок на источник и служебных заметок модели."""
     cleaned = _client_voice(strip_source_refs(text), step)
-    return "" if STORY_RE.search(cleaned) else cleaned
+    return cleaned
 
 
 def build_blocks(

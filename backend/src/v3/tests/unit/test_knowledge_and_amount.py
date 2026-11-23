@@ -62,7 +62,8 @@ def test_operator_voice_about_the_client_is_not_knowledge() -> None:
     assert knowledge_text(text) == ""
 
 
-def test_case_is_cut_but_rule_stays() -> None:
+def test_case_goes_to_knowledge_with_its_rule() -> None:
+    """Кейс не вырезаем: модель объясняет по нему правило, а не выдаёт за обещание."""
     text = "Внесудебное банкротство подходит не всем. У нас была женщина, которой вернули заявление."
 
-    assert knowledge_text(text) == "Внесудебное банкротство подходит не всем."
+    assert knowledge_text(text) == text

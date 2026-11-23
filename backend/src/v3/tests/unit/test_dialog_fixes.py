@@ -12,9 +12,10 @@ from domain.graph_state import GraphState
 from domain.models import RetrievedChunk
 from domain.profile import ClientProfile, extract_phone, extract_time, is_excluded_region, normalize_phone
 from domain.scenario import expected_slot
+from graph.nodes.answer import make_answer_node
 from graph.nodes.extract import make_extract_node
 from graph.nodes.retrieve import make_retrieve_node
-from infrastructure.llm import IntakeDraft
+from infrastructure.llm import AnswerDraft, IntakeDraft
 
 QUALIFIED = ClientProfile(debt_amount=899_000, region="Дагестан")
 
@@ -115,10 +116,14 @@ def test_slot_duplicates_are_dropped_from_facts() -> None:
     assert run("расскажу про себя", draft, ClientProfile(facts={"interest": "МФЦ"})).facts == {"цель": "банкротство"}
 
 
-def test_stories_are_removed() -> None:
+def test_examples_from_practice_reach_the_client() -> None:
+    """Пример из практики компании — объяснение правила, а не запрещённая история."""
     text = "Понял вас. Знаю случай, когда женщина не прошла МФЦ. Вам подойдёт рассрочка."
 
-    assert enforce_style(text, "info") == "Вам подойдёт рассрочка."
+    styled = enforce_style(text, "info")
+
+    assert "Знаю случай, когда женщина не прошла МФЦ." in styled
+    assert "рассрочка" in styled
 
 
 def test_info_has_no_questions() -> None:
@@ -209,3 +214,39 @@ def test_blocks_do_not_show_where_the_answer_came_from() -> None:
     assert [block["type"] for block in blocks] == ["lead", "question"]
     assert "контекст" not in str(blocks).lower()
     assert "источник" not in str(blocks).lower()
+
+
+def answer_for(step_profile: ClientProfile, draft: AnswerDraft, kind: str = "question") -> str:
+    state = GraphState(question="какого отказа?", profile=step_profile, kind=kind)  # type: ignore[arg-type]
+    return cast(str, make_answer_node(lambda prompt: draft)(state)["answer"])
+
+
+def test_info_answer_comes_from_code_not_from_model_plan() -> None:
+    """Модель на info выдавала план («Ничего не гарантировать…») — клиент получает текст кода."""
+    draft = AnswerDraft(summary="Клиент спрашивает про отказ, надо пояснить и упомянуть МФЦ. Без вопросов.")
+    text = answer_for(ClientProfile(debt_amount=310_000), draft)
+
+    assert "350 000" in text
+    assert "310 000" in text
+    assert "МФЦ" in text
+    for leak in ["гарантир", "обещ", "упомянут", "Без вопросов", "Клиент"]:
+        assert leak.lower() not in text.lower(), leak
+
+
+def test_answer_schema_has_no_plan_fields() -> None:
+    """Полей под план и заметки в схеме нет: их нечем показать клиенту."""
+    assert set(AnswerDraft.model_fields) == {"summary", "question"}
+
+
+def test_plan_residue_is_not_shown_to_client() -> None:
+    text = answer_text(
+        "Упомянуто внесудебное банкротство через МФЦ. Завершение — можно написать снова. "
+        "Мы смотрим общий долг по всем обязательствам.",
+        [],
+        "",
+        "rag",
+    )
+
+    assert "Упомянуто" not in text
+    assert "Завершение" not in text
+    assert "общий долг" in text.lower()
