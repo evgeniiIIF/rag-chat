@@ -548,6 +548,27 @@ def test_instruction_about_the_system_never_reaches_the_client() -> None:
     assert text.strip() == "Напишите, пожалуйста, ваш телефон и удобное время для звонка."
 
 
+def test_invite_offers_consultation_before_asking_for_phone() -> None:
+    """Фильтры пройдены — на первом ходу invite только предложение, без записи."""
+    profile = ClientProfile(debt_amount=899_000, region="Ставрополь")
+    draft = AnswerDraft(text="Ставрополь — работаем там, так что можно двигаться дальше.")
+
+    first = answer_for(profile, draft, kind="situation")
+
+    assert "Записать вас на бесплатную консультацию" in first
+    assert "телефон" not in first.lower()
+
+
+def test_invite_asks_phone_after_consent() -> None:
+    """Клиент согласился — только теперь код спрашивает телефон и время."""
+    profile = ClientProfile(debt_amount=899_000, region="Ставрополь")
+    state = GraphState(question="да, давайте", profile=profile, kind="situation", previous_step="invite")
+
+    text = cast(str, make_answer_node(lambda prompt: AnswerDraft(text="Хорошо, тогда запишу вас."))(state)["answer"])
+
+    assert "телефон" in text.lower()
+
+
 def test_stage_instructions_do_not_talk_about_the_system() -> None:
     """Модель копирует служебные оговорки дословно — в инструкциях их быть не должно."""
     for step, instruction in STAGE_INSTRUCTIONS.items():

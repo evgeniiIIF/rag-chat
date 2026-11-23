@@ -103,7 +103,7 @@ def make_answer_node(answer_fn: AnswerFn, artifacts_dir: Path | None = None) -> 
         if not state.profile.filters_ok() and step in {"invite", "booked"}:
             # жёсткий гейт: без пройденных фильтров записи и консультации не бывает
             step = "info"
-        ask = step_question(step, state.profile)
+        ask = step_question(step, state.profile, state.previous_step)
         if step == "booked":
             first = state.previous_step != "booked"
             text = answer_text("", [], "", step, state.profile) if first else BOOKING_CONFIRMED

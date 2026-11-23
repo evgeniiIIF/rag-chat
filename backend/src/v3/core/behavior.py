@@ -165,13 +165,20 @@ ASK_QUESTIONS: dict[str, str] = {
     "ask_region": "Подскажите, пожалуйста, в каком регионе вы прописаны?",
 }
 
+# первый ход invite — только предложение: телефон и время спрашиваем после согласия
+INVITE_QUESTION = "Записать вас на бесплатную консультацию к юристу?"
 
-def step_question(step: str, profile: ClientProfile) -> str:
-    """Вопрос, который задаёт код: сумма и регион на сборе фильтров, телефон и время на invite, иначе пусто."""
+
+def step_question(step: str, profile: ClientProfile, previous_step: str = "") -> str:
+    """Вопрос, который задаёт код: сумма и регион на сборе фильтров, телефон и время на invite, иначе пусто.
+
+    На invite вопрос зависит от прошлого хода: сначала только предложение консультации,
+    а телефон и время — на следующем ходу, после согласия клиента.
+    """
     if step in ASK_QUESTIONS:
         return ASK_QUESTIONS[step]
     if step == "invite":
-        return pending_question(profile)
+        return INVITE_QUESTION if previous_step != "invite" else pending_question(profile)
     return ""
 
 
