@@ -84,7 +84,7 @@ export function ChatPage(): JSX.Element {
             <span className="text-lg leading-none">✨</span>
           </div>
           <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-lg">RAG Assistant</h1>
+            <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-lg">Assistant</h1>
             <p className="hidden text-xs text-slate-400 sm:block">Ответы по вашему документу v2</p>
           </div>
         </div>

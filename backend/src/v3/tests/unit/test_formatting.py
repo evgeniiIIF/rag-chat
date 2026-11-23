@@ -77,3 +77,18 @@ def test_booking_text_reads_naturally() -> None:
     assert "юрист позвонит на" in text
     assert "+79991234567" in text
     assert "время — завтра" in text
+
+
+def test_explanation_survives_when_model_ends_with_step_question() -> None:
+    summary = (
+        "Понимаю, ситуация с рассрочкой давит, но для банкротства важна общая сумма всех долгов — "
+        "кредиты, займы, рассрочки, налоги, ЖКХ. Подскажите, пожалуйста, какая у вас общая сумма долга "
+        "по всем обязательствам?"
+    )
+    ask = "Подскажите, пожалуйста, какая у вас общая сумма долга?"
+
+    text = answer_text(summary, [], "", "ask_debt", ask=ask)
+
+    assert "кредиты, займы, рассрочки, налоги, ЖКХ" in text
+    assert text.endswith(ask)
+    assert text.count("какая у вас общая сумма долга") == 1

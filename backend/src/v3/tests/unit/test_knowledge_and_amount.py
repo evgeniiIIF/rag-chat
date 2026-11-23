@@ -62,6 +62,21 @@ def test_operator_voice_about_the_client_is_not_knowledge() -> None:
     assert knowledge_text(text) == ""
 
 
+def test_operator_heading_keeps_its_list() -> None:
+    """Зачин «можно объяснять коротко» — инструкция, но этапы под ним нужны клиенту."""
+    text = (
+        "Этапы процедуры можно объяснять коротко:\n"
+        "бесплатная консультация и разбор ситуации;\n"
+        "расчет стоимости и рисков;\n"
+        "подача заявления в суд."
+    )
+
+    cleaned = knowledge_text(text)
+
+    assert cleaned.startswith("Этапы процедуры:")
+    assert "подача заявления в суд" in cleaned
+
+
 def test_case_goes_to_knowledge_with_its_rule() -> None:
     """Кейс не вырезаем: модель объясняет по нему правило, а не выдаёт за обещание."""
     text = "Внесудебное банкротство подходит не всем. У нас была женщина, которой вернули заявление."

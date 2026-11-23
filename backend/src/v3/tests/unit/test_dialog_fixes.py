@@ -131,7 +131,13 @@ def test_info_has_no_questions() -> None:
 
 
 def test_collecting_step_keeps_ack_and_question() -> None:
-    assert enforce_style("Понял. Это важно. Какая сумма долга?", "ask_debt") == "Какая сумма долга?"
+    assert enforce_style("Понял. Это важно. Какая сумма долга?", "ask_debt") == "Понял. Какая сумма долга?"
+
+
+def test_short_warm_ack_reaches_the_client() -> None:
+    """Живой отклик — часть ответа, а не мусор: «Понял вас.» остаётся."""
+    assert enforce_style("Понял вас. Какая сумма долга?", "ask_debt") == "Понял вас. Какая сумма долга?"
+    assert enforce_style("Фильтры. Какая сумма долга?", "ask_debt") == "Какая сумма долга?"
 
 
 def test_long_answer_is_cut_but_final_question_stays() -> None:
@@ -236,6 +242,34 @@ def test_info_answer_comes_from_code_not_from_model_plan() -> None:
 def test_answer_schema_has_no_plan_fields() -> None:
     """Полей под план и заметки в схеме нет: их нечем показать клиенту."""
     assert set(AnswerDraft.model_fields) == {"summary", "question"}
+
+
+def test_answer_description_is_not_sent_to_client() -> None:
+    """«Ответ с тёплым откликом…» — описание ответа, а не ответ."""
+    text = answer_text("Ответ с тёплым откликом и одним вопросом о сумме. 2–3 предложения.", [], "", "rag")
+
+    assert text == ""
+
+
+def test_plan_instead_of_answer_is_retried_and_replaced() -> None:
+    """Первая попытка = план, вторая = текст: клиент получает текст, а не описание."""
+    drafts = iter(
+        [
+            AnswerDraft(summary="Ответ с тёплым откликом и одним вопросом о сумме. 2–3 предложения."),
+            AnswerDraft(
+                summary="Рассрочка 310 тысяч — это заметная нагрузка, но для процедуры важна общая сумма "
+                "по всем кредиторам: банки, МФО, налоги, ЖКХ.",
+                question="Какая у вас общая сумма долга?",
+            ),
+        ]
+    )
+    state = GraphState(question="рассрочку не могу платить", profile=ClientProfile(), kind="situation")
+
+    result = make_answer_node(lambda prompt: next(drafts))(state)
+
+    assert "Ответ с" not in str(result["answer"])
+    assert "общая сумма" in str(result["answer"]).lower()
+    assert result["answer_question"] == "Подскажите, пожалуйста, какая у вас общая сумма долга?"
 
 
 def test_plan_residue_is_not_shown_to_client() -> None:

@@ -94,9 +94,26 @@ def make_answer_node(answer_fn: AnswerFn, artifacts_dir: Path | None = None) -> 
             ask=ask,
             short=step in SHORT_STEPS,
         )
+        prompts = [SYSTEM_PROMPT, STAGE_INSTRUCTIONS.get(step, "")]
         draft = answer_fn(prompt)
-        if _echo_of_prompt(draft.summary, [SYSTEM_PROMPT, STAGE_INSTRUCTIONS.get(step, "")]):
-            draft = draft.model_copy(update={"summary": ""})
+        if not draft.summary.strip() or _echo_of_prompt(draft.summary, prompts):
+            # модель описала ответ («Ответ с тёплым откликом…») — просим текст ещё раз
+            retry = answer_fn(
+                build_prompt(
+                    step=step,
+                    profile=state.profile,
+                    question=state.question,
+                    chunks=context,
+                    history=state.messages[:-1],
+                    ask=ask,
+                    short=step in SHORT_STEPS,
+                    strict=True,
+                ),
+            )
+            if not _echo_of_prompt(retry.summary, prompts) and retry.summary.strip():
+                draft = retry
+            else:
+                draft = draft.model_copy(update={"summary": ""})
         said = [str(message.content) for message in state.messages[:-1] if message.type == "ai"]
         text = answer_text(draft.summary, [], draft.question, step, ask=ask, said=said[-3:])
         if step == "info":

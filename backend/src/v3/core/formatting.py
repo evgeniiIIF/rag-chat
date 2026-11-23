@@ -64,7 +64,9 @@ _NOTE_HEAD = re.compile(
 # остатки плана модели: «Упомянуто внесудебное банкротство», «Завершение — можно написать снова»
 _PLAN_RESIDUE = re.compile(
     r"(?i)^\s*(?:упомянут\w*|отмечен\w*|указан\w*|завершени\w*|итог\w*\s*—"
-    r"|без\s+(?:вопрос|списк|предложени|пересказ|извинени|гаранти)\w*)"
+    r"|без\s+(?:вопрос|списк|предложени|пересказ|извинени|гаранти)\w*"
+    r"|ответ\w*\s+(?:с|—|–|-|:)|текст\s+ответа|клиенту\s+(?:сказать|ответить|объяснить|предложить)"
+    r"|предложени\w*\s+(?:из|на)\s+\d)"
 )
 _INTERNAL_NOTE = re.compile(
     r"(?i)^\s*(?:клиент|клиентка)\b"
@@ -136,6 +138,13 @@ def _instruction(sentence: str) -> bool:
     return bool(_PLAN_CUE.match(words[0])) and any(_INFINITIVE_WORD.match(w) for w in words[1:3])
 
 
+# короткий тёплый отклик: «Понял вас.», «Понимаю.», «Это нормально.» — клиенту нужен, в отличие от мусора
+_WARM_ACK = re.compile(
+    r"(?i)^\s*(?:понял|понимаю|слышу|вижу|согласен|конечно|хорошо|разумеется|"
+    r"это\s+нормально|сомнения|не\s+страшно|спасибо)\b"
+)
+
+
 def _client_voice(text: str, step: str = "") -> str:
     """Убрать рассуждения модели о клиенте и о себе: клиент читает только обращённый к нему ответ."""
     sentences = _SENTENCE.split(" ".join(text.split()))
@@ -143,7 +152,7 @@ def _client_voice(text: str, step: str = "") -> str:
     return " ".join(
         _LABEL.sub("", sentence)
         for sentence in sentences
-        if len(sentence.strip()) >= 12
+        if (len(sentence.strip()) >= 12 or _WARM_ACK.match(sentence))
         and sentence.strip()[0] not in "—–-"
         and not SELF_TALK_RE.search(sentence)
         and not _instruction(sentence)
@@ -197,6 +206,16 @@ def _repeat(one: str, other: str) -> bool:
     return left == right or left in right or right in left
 
 
+def _drop_tail_question(head: str, tail: str) -> str:
+    """Убираем из сути вопрос, который код задаёт сам, но объяснение клиенту оставляем."""
+    sentences = [part.strip() for part in _SENTENCE.split(head) if part.strip()]
+    while len(sentences) > 1 and sentences[-1].rstrip().endswith("?"):
+        if not _repeat(sentences[-1], tail):
+            break
+        sentences.pop()
+    return " ".join(sentences)
+
+
 def answer_text(
     summary: str,
     points: Iterable[str],
@@ -223,8 +242,10 @@ def answer_text(
     tail = ask or own
     if step == "info":  # клиент не проходит фильтр: объясняем и закрываем разговор, вопросов больше нет
         tail = ""
-    if head and tail and _repeat(head, tail):  # вопрос модели совпал с вопросом шага
-        head = ""
+    if head and tail:  # вопрос модели совпал с вопросом шага — выкидываем только сам вопрос
+        head = _drop_tail_question(head, tail)
+        if head and _repeat(head, tail):
+            tail = ""  # вопрос уже прозвучал внутри сути, второй раз не задаём
     # шаги сбора данных: клиенту ничего не объясняем, остаётся реплика и вопрос
     if step in SHORT_STEPS:
         points = []
@@ -296,6 +317,20 @@ def split_question(text: str) -> tuple[str, str]:
     return text.strip(), ""
 
 
+_OPERATOR_HEADING_RE = re.compile(
+    r"(?i)^(.*?)\s+(?:можно|стоит|лучше|нужно)\s+(?:объяснять|говорить|рассказывать|использовать)"
+    r"[^:]{0,24}:\s*$"
+)
+
+
+def _neutral_heading(sentence: str) -> str:
+    """Служебный зачин «Этапы процедуры можно объяснять коротко:» → «Этапы процедуры:»."""
+    match = _OPERATOR_HEADING_RE.match(sentence.strip())
+    if not match:
+        return sentence
+    return f"{match.group(1).strip(' :—-')}:"
+
+
 def knowledge_text(text: str) -> str:
     """Знания для клиента: без инструкций операторам, примеры из практики остаются.
 
@@ -303,7 +338,10 @@ def knowledge_text(text: str) -> str:
     пометка вроде «это не нужно зачитывать». Кейсы не вырезаем: модель объясняет по ним правила,
     поэтому текст доходит целиком.
     """
-    flat = " ".join(text.split())
+    lines = text.splitlines()
+    if lines:  # служебный зачин-инструкция меняем на нейтральный заголовок, список сохраняем
+        lines[0] = _neutral_heading(lines[0])
+    flat = " ".join("\n".join(lines).split())
     if not flat:
         return ""
     if not flat[0].isupper():  # обрывок с середины фразы: начало кейса потеряно при нарезке

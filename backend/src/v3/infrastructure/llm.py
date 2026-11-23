@@ -23,6 +23,7 @@ from core.behavior import (
     CONDENSE_SYSTEM_PROMPT,
     HISTORY_TOKEN_BUDGET,
     INTAKE_SYSTEM_PROMPT,
+    STRICT_NOTE,
     build_system_prompt,
     build_user_message,
     filter_state_text,
@@ -121,10 +122,13 @@ def build_prompt(
     history: Sequence[BaseMessage] = (),
     ask: str = "",
     short: bool = False,
+    strict: bool = False,
 ) -> Prompt:
     """Сообщения для модели на текущем шаге: роль + история + профиль + фрагменты + вопрос шага."""
     fragments = _fragments(chunks)
     system = build_system_prompt(step, profile)
+    if strict:  # модель написала план вместо ответа — просим текст ещё раз
+        system = f"{system}\n\n{STRICT_NOTE}"
     kept = trim_history(history)
     messages: list[BaseMessage] = [
         SystemMessage(content=system),
