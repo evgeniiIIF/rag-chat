@@ -29,13 +29,12 @@ docker compose up -d --build
 
 ## Проверки
 
-Backend (локально, через conda env \`ragchat\`):
+Backend (v3 — самостоятельный uv-проект в `backend/src/v3`):
 
 \`\`\`bash
-cd backend
-conda activate ragchat
+cd backend/src/v3
 uv sync --extra dev
-make check        # ruff + ruff format + mypy strict (models+services) + pytest
+make check        # ruff + ruff format + mypy + pytest (coverage ≥ 80)
 \`\`\`
 
 Frontend (локально):

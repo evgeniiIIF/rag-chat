@@ -29,6 +29,19 @@ describe("session id", () => {
     }
   });
 
+  it("creates id without crypto.randomUUID (plain http = не secure context)", () => {
+    localStorage.clear();
+    vi.stubGlobal("crypto", {});
+    try {
+      const id = getSessionId();
+      expect(id).toBeTypeOf("string");
+      expect(id.length).toBeGreaterThan(1);
+      expect(getSessionId()).toBe(id);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("resetSessionId returns fresh id and stores it", () => {
     const before = getSessionId();
     const fresh = resetSessionId();

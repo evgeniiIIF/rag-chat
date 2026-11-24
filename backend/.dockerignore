@@ -9,8 +9,14 @@ __pycache__
 chroma_db/
 *.log
 .DS_Store
-.venv
-.pytest_cache
-.mypy_cache
-.ruff_cache
 htmlcov
+
+# вложенные каталоги: шаблон без «**/» матчит только корень контекста
+**/.venv
+**/.chroma
+**/artifacts
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
